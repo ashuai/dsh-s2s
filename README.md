@@ -38,7 +38,7 @@ s2s 是上游的同宿主**特化**,能力天然重叠,因此:
 
 **保留(上游功劳)**:mesh 客户端(串行注入 `followup/inject`、`persistConnections`、退避重连)、hub 全套(注册表/不可变历史/presence/协议 v3)、3 个模型工具、消息附件机制(协议组成部分,按需使用)、错误分类与 invariant 体系、vitest 测试套件。
 
-**裁剪**:浏览器视图层(`view.ts`/`activity.ts`)、命令面(`commands.ts`)、浏览器测试替身(`test/` stubs)与 `ui-a2a` 浏览器包(不随 fork)。
+**裁剪**:命令面(`commands.ts`)、浏览器测试替身(`test/` stubs)与 `ui-a2a` 浏览器包(不随 fork);`view.ts`/`activity.ts` 保留——它们是 mesh 核心直接依赖的内部件(活动跟踪与类型),不是外接面。
 
 **新增(s2s 增量)**:`mailbox.ts` 静止会话信箱、`lifecycle.ts` 经 `AgentRegistry.resume` 拉起 + `agent.followup` 投递 + 授权闸、`budget.ts` 发送侧防回环预算。
 

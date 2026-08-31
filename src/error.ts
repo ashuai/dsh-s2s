@@ -1,53 +1,53 @@
 /**
- * Domain errors for the a2a seam. Wire and registry failures carry a stable
+ * Domain errors for the s2s seam. Wire and registry failures carry a stable
  * machine-routable code; route on `code`, never by parsing `message`.
  * @module @dpskh/a2a/error
  */
 
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 
-/** Stable machine-routable failure codes for the a2a seam. */
-export type A2aErrorCode =
-  | 'A2A_DUPLICATE_PEER'
-  | 'A2A_DUPLICATE_PROVIDER'
-  | 'A2A_CLIENT_CONFIGURED_MISSING'
-  | 'A2A_CLIENT_CONFIGURED_UNAVAILABLE'
-  | 'A2A_CLIENT_AMBIGUOUS'
-  | 'A2A_CLIENT_UNAVAILABLE'
-  | 'A2A_CLIENT_TRANSPORT'
-  | 'A2A_CLIENT_CONNECT'
-  | 'A2A_HTTP_INTERFACE'
-  | 'A2A_HTTP_STATUS'
-  | 'A2A_HTTP_TRANSPORT'
-  | 'A2A_INVALID_AGENT_CARD'
-  | 'A2A_INVALID_TASK'
-  | 'A2A_INVALID_MESSAGE'
-  | 'A2A_INVALID_PAYLOAD'
-  | 'A2A_INVALID_JSONRPC'
-  | 'A2A_BAD_REQUEST'
-  | 'A2A_REGISTRY'
-  | 'A2A_PROJECT_CONFLICT'
-  | 'A2A_UNKNOWN_PROJECT'
-  | 'A2A_NAME_IN_USE'
-  | 'A2A_MESSAGE_ID_CONFLICT'
-  | 'A2A_UNKNOWN_REPLY'
-  | 'A2A_PAYLOAD_TOO_LARGE'
-  | 'A2A_MESSAGE_REJECTED'
-  | 'A2A_PROTOCOL_MISMATCH'
-  | 'A2A_CLAIM_REJECTED'
-  | 'A2A_INVALID_FRAME'
-  | 'A2A_RECIPIENT_NOT_PRESENT'
+/** Stable machine-routable failure codes for the s2s seam. */
+export type S2sErrorCode =
+  | 'S2S_DUPLICATE_PEER'
+  | 'S2S_DUPLICATE_PROVIDER'
+  | 'S2S_CLIENT_CONFIGURED_MISSING'
+  | 'S2S_CLIENT_CONFIGURED_UNAVAILABLE'
+  | 'S2S_CLIENT_AMBIGUOUS'
+  | 'S2S_CLIENT_UNAVAILABLE'
+  | 'S2S_CLIENT_TRANSPORT'
+  | 'S2S_CLIENT_CONNECT'
+  | 'S2S_HTTP_INTERFACE'
+  | 'S2S_HTTP_STATUS'
+  | 'S2S_HTTP_TRANSPORT'
+  | 'S2S_INVALID_AGENT_CARD'
+  | 'S2S_INVALID_TASK'
+  | 'S2S_INVALID_MESSAGE'
+  | 'S2S_INVALID_PAYLOAD'
+  | 'S2S_INVALID_JSONRPC'
+  | 'S2S_BAD_REQUEST'
+  | 'S2S_REGISTRY'
+  | 'S2S_PROJECT_CONFLICT'
+  | 'S2S_UNKNOWN_PROJECT'
+  | 'S2S_NAME_IN_USE'
+  | 'S2S_MESSAGE_ID_CONFLICT'
+  | 'S2S_UNKNOWN_REPLY'
+  | 'S2S_PAYLOAD_TOO_LARGE'
+  | 'S2S_MESSAGE_REJECTED'
+  | 'S2S_PROTOCOL_MISMATCH'
+  | 'S2S_CLAIM_REJECTED'
+  | 'S2S_INVALID_FRAME'
+  | 'S2S_RECIPIENT_NOT_PRESENT'
 
 /**
- * A wire-format or registry failure in the a2a seam.
+ * A wire-format or registry failure in the s2s seam.
  * @param message - human-readable failure description.
  * @param code - stable failure class for programmatic routing.
  * @param options - standard `Error` options (`cause` chaining).
  */
-export class A2aError extends HarnessError {
-  override readonly code: A2aErrorCode
+export class S2sError extends HarnessError {
+  override readonly code: S2sErrorCode
 
-  constructor(message: string, code: A2aErrorCode, options?: ErrorOptions) {
+  constructor(message: string, code: S2sErrorCode, options?: ErrorOptions) {
     super(message, code, options)
     this.code = code
   }

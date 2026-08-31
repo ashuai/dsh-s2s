@@ -14,12 +14,12 @@ import Storage from '@deepseek-ai/dsh-storage'
 import { SqliteStorageBackend } from '@deepseek-ai/dsh-storage-sqlite'
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 import Settings, { type SettingsNamespace } from '@deepseek-ai/dsh-settings'
-import { a2aHubDomainSpec } from '../src/hub/spec.ts'
-import { A2aHubRegistry } from '../src/hub/registry.ts'
-import { A2aHubMessages } from '../src/hub/messages.ts'
-import { A2aHubServer } from '../src/hub/server.ts'
-import { A2aMeshService } from '../src/mesh.ts'
-import type { A2aChange } from '../src/mesh.ts'
+import { s2sHubDomainSpec } from '../src/hub/spec.ts'
+import { S2sHubRegistry } from '../src/hub/registry.ts'
+import { S2sHubMessages } from '../src/hub/messages.ts'
+import { S2sHubServer } from '../src/hub/server.ts'
+import { S2sMeshService } from '../src/mesh.ts'
+import type { S2sChange } from '../src/mesh.ts'
 
 const settingsDocuments = new Map<string, Record<string, unknown>>()
 
@@ -60,16 +60,16 @@ async function harness() {
   ctx.storage.backend.register('sqlite', backend)
   const facility = new DomainFacility(ctx, { backend: 'sqlite' })
   ctx.storage.mount('domain', facility)
-  const domain = await facility.open(a2aHubDomainSpec)
-  const registry = new A2aHubRegistry(domain)
-  const messages = new A2aHubMessages(domain)
-  const server = new A2aHubServer({ port: 0, registry, messages })
+  const domain = await facility.open(s2sHubDomainSpec)
+  const registry = new S2sHubRegistry(domain)
+  const messages = new S2sHubMessages(domain)
+  const server = new S2sHubServer({ port: 0, registry, messages })
   const port = await server.listen()
   const hubUrl = `http://127.0.0.1:${port}`
   return { ctx, server, hubUrl, port, registry }
 }
 
-describe('A2aMeshService', () => {
+describe('S2sMeshService', () => {
   it('connects one presence per agent and routes injections to each', async () => {
     const { ctx, server, hubUrl, registry } = await harness()
     try {
@@ -78,11 +78,11 @@ describe('A2aMeshService', () => {
         ['agent-a', agentStub('agent-a', 'idle')],
         ['agent-b', agentStub('agent-b', 'idle')],
       ])
-      const meshCtx = ctx.isolate('a2aMesh').isolate('agents')
+      const meshCtx = ctx.isolate('s2sMesh').isolate('agents')
       meshCtx.provide('agents', { get: (id: string) => agents.get(id) } as never)
-      const mesh = new A2aMeshService(meshCtx, { hubUrl, project: 'mesh', reconnectMs: 30 })
+      const mesh = new S2sMeshService(meshCtx, { hubUrl, project: 'mesh', reconnectMs: 30 })
       const presenceEvents: Array<{ name: string; joined: boolean }> = []
-      meshCtx.on('a2a/presence-changed', payload => presenceEvents.push({ name: payload.name, joined: payload.joined }))
+      meshCtx.on('s2s/presence-changed', payload => presenceEvents.push({ name: payload.name, joined: payload.joined }))
 
       const statusA = await mesh.connect('agent-a', 'mesh', 'api')
       expect(statusA).toMatchObject({ connected: true, project: 'mesh', name: 'api', peers: [] })
@@ -109,15 +109,15 @@ describe('A2aMeshService', () => {
           throw new Error('agent-b has not received the message yet')
         }
         const content = agent.followup.mock.calls[0]![0] as { content: Array<{ type: string; text: string }>; source: { kind: string } }
-        expect(content.source.kind).toBe('a2a')
+        expect(content.source.kind).toBe('s2s')
         const text = content.content.map(block => block.text).join('')
-        expect(text).toContain('[a2a message] ref=mesh:1 from=api project=mesh')
+        expect(text).toContain('[s2s message] ref=mesh:1 from=api project=mesh')
         expect(text).toContain('check the login contract')
       }, { timeout: 5_000 })
 
       // The delivering side acknowledges; the sender observes the delivery.
       const deliveries: unknown[] = []
-      meshCtx.on('a2a/delivery', delivery => deliveries.push(delivery))
+      meshCtx.on('s2s/delivery', delivery => deliveries.push(delivery))
       await vi.waitFor(() => {
         if (deliveries.length === 0) throw new Error('no delivery event yet')
       }, { timeout: 5_000 })
@@ -144,9 +144,9 @@ describe('A2aMeshService', () => {
         ['agent-a', agentStub('agent-a', 'idle')],
         ['agent-b', agentStub('agent-b', 'idle')],
       ])
-      const meshCtx = ctx.isolate('a2aMesh').isolate('agents')
+      const meshCtx = ctx.isolate('s2sMesh').isolate('agents')
       meshCtx.provide('agents', { get: (id: string) => agents.get(id) } as never)
-      const mesh = new A2aMeshService(meshCtx, { hubUrl, project: 'mesh' })
+      const mesh = new S2sMeshService(meshCtx, { hubUrl, project: 'mesh' })
       await mesh.connect('agent-a', 'mesh', 'api')
       await mesh.connect('agent-b', 'mesh', 'web')
 
@@ -178,7 +178,7 @@ describe('A2aMeshService', () => {
   })
 
   it('materializes inbound attachments and reuses history', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'a2a-mesh-'))
+    const root = await mkdtemp(join(tmpdir(), 's2s-mesh-'))
     try {
       const { ctx, server, hubUrl, registry } = await harness()
       try {
@@ -189,12 +189,12 @@ describe('A2aMeshService', () => {
           ['sender', agentStub('sender', 'idle')],
           ['receiver', agentStub('receiver', 'idle')],
         ])
-        const senderCtx = ctx.isolate('a2aMesh').isolate('agents')
+        const senderCtx = ctx.isolate('s2sMesh').isolate('agents')
         senderCtx.provide('agents', { get: (id: string) => agents.get(id) } as never)
-        const sender = new A2aMeshService(senderCtx, { hubUrl, project: 'mesh' })
-        const receiverCtx = ctx.isolate('a2aMesh').isolate('agents')
+        const sender = new S2sMeshService(senderCtx, { hubUrl, project: 'mesh' })
+        const receiverCtx = ctx.isolate('s2sMesh').isolate('agents')
         receiverCtx.provide('agents', { get: (id: string) => agents.get(id) } as never)
-        const receiver = new A2aMeshService(receiverCtx, { hubUrl, project: 'mesh' })
+        const receiver = new S2sMeshService(receiverCtx, { hubUrl, project: 'mesh' })
         await sender.connect('sender', 'mesh', 'api')
         await receiver.connect('receiver', 'mesh', 'web')
 
@@ -246,9 +246,9 @@ describe('A2aMeshService', () => {
     try {
       await registry.createProject('mesh')
       const agent = agentStub('agent-a', 'idle')
-      const meshCtx = ctx.isolate('a2aMesh').isolate('agents')
+      const meshCtx = ctx.isolate('s2sMesh').isolate('agents')
       meshCtx.provide('agents', { get: () => agent } as never)
-      const mesh = new A2aMeshService(meshCtx, { hubUrl, project: 'mesh', agentId: 'agent-a', reconnectMs: 30 })
+      const mesh = new S2sMeshService(meshCtx, { hubUrl, project: 'mesh', agentId: 'agent-a', reconnectMs: 30 })
       // The stub registry never emits agent/created on its own; fire the
       // lifecycle event the real agent registry emits on registration.
       meshCtx.emit('agent/created', { agent: { id: 'agent-a' } } as never)
@@ -272,7 +272,7 @@ describe('A2aMeshService', () => {
   })
 
   it('persists per-session connections and rejoins them on registration', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'a2a-mesh-'))
+    const root = await mkdtemp(join(tmpdir(), 's2s-mesh-'))
     try {
       const { ctx, server, hubUrl, registry } = await harness()
       try {
@@ -285,11 +285,11 @@ describe('A2aMeshService', () => {
         // disposing the isolated context's `fiber` would restart the whole
         // harness root instead.
         const agents = new Map([['agent-a', agentStub('agent-a', 'idle')]])
-        const firstCtx = ctx.isolate('a2aMesh').isolate('agents')
+        const firstCtx = ctx.isolate('s2sMesh').isolate('agents')
         const firstSettingsFiber = await firstCtx.plugin(TestSettings, { path: settingsFile })
         firstCtx.provide('agents', { get: (id: string) => agents.get(id) } as never)
-        const firstFiber = await firstCtx.plugin(A2aMeshService, { hubUrl, project: 'main', persistConnections: true })
-        const first = firstCtx.a2aMesh
+        const firstFiber = await firstCtx.plugin(S2sMeshService, { hubUrl, project: 'main', persistConnections: true })
+        const first = firstCtx.s2sMesh
         await first.connect('agent-a', 'mesh', 'api')
         expect(await first.status('agent-a')).toMatchObject({ connected: true, project: 'mesh', name: 'api' })
 
@@ -300,11 +300,11 @@ describe('A2aMeshService', () => {
 
         // Second lifetime over the same settings file: the session rejoins
         // its stored project and name when its agent registers.
-        const secondCtx = ctx.isolate('a2aMesh').isolate('agents')
+        const secondCtx = ctx.isolate('s2sMesh').isolate('agents')
         await secondCtx.plugin(TestSettings, { path: settingsFile })
         secondCtx.provide('agents', { get: (id: string) => agents.get(id) } as never)
-        await secondCtx.plugin(A2aMeshService, { hubUrl, project: 'main', persistConnections: true })
-        const second = secondCtx.a2aMesh
+        await secondCtx.plugin(S2sMeshService, { hubUrl, project: 'main', persistConnections: true })
+        const second = secondCtx.s2sMesh
         secondCtx.emit('agent/created', { agent: { id: 'agent-a' } } as never)
         await vi.waitFor(async () => {
           const status = await second.status('agent-a')
@@ -327,13 +327,13 @@ describe('A2aMeshService', () => {
   })
 
   it('does not throw on agent/created while the connections document is empty', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'a2a-mesh-'))
+    const root = await mkdtemp(join(tmpdir(), 's2s-mesh-'))
     try {
       const ctx = new Context()
-      const meshCtx = ctx.isolate('a2aMesh').isolate('agents')
+      const meshCtx = ctx.isolate('s2sMesh').isolate('agents')
       await meshCtx.plugin(TestSettings, { path: join(root, 'settings.yaml') })
       meshCtx.provide('agents', { get: () => undefined } as never)
-      await meshCtx.plugin(A2aMeshService, { project: 'main', persistConnections: true })
+      await meshCtx.plugin(S2sMeshService, { project: 'main', persistConnections: true })
       // A fresh settings document resolves `connections` to the schema default,
       // so a registration with no stored record must not index an undefined
       // key (it used to throw inside the agent/created listener).
@@ -344,7 +344,7 @@ describe('A2aMeshService', () => {
     }
   })
 
-  it('tracks conversation activity in the snapshot and a2a/change events', async () => {
+  it('tracks conversation activity in the snapshot and s2s/change events', async () => {
     const { ctx, server, hubUrl, registry } = await harness()
     try {
       await registry.createProject('mesh')
@@ -352,13 +352,13 @@ describe('A2aMeshService', () => {
         ['agent-a', agentStub('agent-a', 'idle')],
         ['agent-b', agentStub('agent-b', 'idle')],
       ])
-      const meshCtx = ctx.isolate('a2aMesh').isolate('agents')
+      const meshCtx = ctx.isolate('s2sMesh').isolate('agents')
       meshCtx.provide('agents', { get: (id: string) => agents.get(id) } as never)
-      const mesh = new A2aMeshService(meshCtx, { hubUrl, project: 'mesh', reconnectMs: 30 })
-      const changes: A2aChange[] = []
-      meshCtx.on('a2a/change', change => changes.push(change))
+      const mesh = new S2sMeshService(meshCtx, { hubUrl, project: 'mesh', reconnectMs: 30 })
+      const changes: S2sChange[] = []
+      meshCtx.on('s2s/change', change => changes.push(change))
       const deliveries: unknown[] = []
-      meshCtx.on('a2a/delivery', delivery => deliveries.push(delivery))
+      meshCtx.on('s2s/delivery', delivery => deliveries.push(delivery))
 
       await mesh.connect('agent-a', 'mesh', 'api')
       await mesh.connect('agent-b', 'mesh', 'web')
@@ -424,7 +424,7 @@ describe('A2aMeshService', () => {
     const ctx = new Context()
     const agent = agentStub('agent-a', 'idle')
     ctx.provide('agents', { get: () => agent } as never)
-    const mesh = new A2aMeshService(ctx, { project: 'mesh', agentId: 'agent-a' })
+    const mesh = new S2sMeshService(ctx, { project: 'mesh', agentId: 'agent-a' })
     await expect(mesh.connect('agent-a')).rejects.toThrow(/no hubUrl/)
     await ctx.fiber.dispose()
   })

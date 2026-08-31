@@ -2,7 +2,7 @@
  * Message payloads on the mesh wire: identity under the plain limit,
  * gzip+base64 above it, and a hard decoded-size cap so a hostile hub never
  * inflates memory. Text, attachments, and their sum share one content
- * budget (mirrors the omp-a2a v0.3 payload contract).
+ * budget (mirrors the omp-s2s v0.3 payload contract).
  * @module @dpskh/a2a/hub/payload
  */
 

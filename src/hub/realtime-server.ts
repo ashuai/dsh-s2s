@@ -13,15 +13,15 @@
 import type { IncomingMessage, Server } from 'node:http'
 import type { Socket } from 'node:net'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
-import { A2aHubMessages, MessageIdConflictError, UnknownReplyTargetError } from './messages.ts'
+import { S2sHubMessages, MessageIdConflictError, UnknownReplyTargetError } from './messages.ts'
 import { PayloadTooLargeError } from './payload.ts'
-import { A2aPresenceRegistry, NameInUseError, type A2aPresence } from './presence.ts'
+import { S2sPresenceRegistry, NameInUseError, type S2sPresence } from './presence.ts'
 import {
-  A2A_PROTOCOL_VERSION,
-  type A2aClientFrame,
-  type A2aServerFrame,
+  S2S_PROTOCOL_VERSION,
+  type S2sClientFrame,
+  type S2sServerFrame,
 } from './realtime-types.ts'
-import type { A2aMessageTarget, A2aProject } from './types.ts'
+import type { S2sMessageTarget, S2sProject } from './types.ts'
 
 /** One WebSocket frame's byte cap (text + attachment base64 fits below it). */
 const MAX_FRAME_BYTES = 6 * 1024 * 1024
@@ -54,10 +54,10 @@ type PendingDelivery = {
 }
 
 /** The realtime hub over one HTTP server and one message store. */
-export class A2aRealtimeHub {
+export class S2sRealtimeHub {
   private readonly server: Server
   private readonly wss: WebSocketServer
-  private readonly presences = new A2aPresenceRegistry()
+  private readonly presences = new S2sPresenceRegistry()
   private readonly alive = new Map<WebSocket, boolean>()
   private readonly closeReasons = new Map<WebSocket, 'connection_closed' | 'heartbeat_timeout' | 'hub_shutdown'>()
   private readonly pendingDeliveries = new Map<string, PendingDelivery>()
@@ -72,8 +72,8 @@ export class A2aRealtimeHub {
    */
   constructor(
     server: Server,
-    private readonly messages: A2aHubMessages,
-    private readonly getProject: (name: string) => A2aProject | null,
+    private readonly messages: S2sHubMessages,
+    private readonly getProject: (name: string) => S2sProject | null,
   ) {
     this.server = server
     this.wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES })
@@ -167,20 +167,20 @@ export class A2aRealtimeHub {
     const claimed = this.presences.getBySocket(socket)
     if (!claimed) {
       if (value.type !== 'hello') throw new Error('hello must be the first frame')
-      this.claim(socket, value as Partial<Extract<A2aClientFrame, { type: 'hello' }>>)
+      this.claim(socket, value as Partial<Extract<S2sClientFrame, { type: 'hello' }>>)
       return
     }
     if (value.type === 'message') {
-      void this.handleMessage(claimed, value as Partial<Extract<A2aClientFrame, { type: 'message' }>>)
+      void this.handleMessage(claimed, value as Partial<Extract<S2sClientFrame, { type: 'message' }>>)
       return
     }
     if (value.type === 'delivered') {
-      const frame = value as Partial<Extract<A2aClientFrame, { type: 'delivered' }>>
+      const frame = value as Partial<Extract<S2sClientFrame, { type: 'delivered' }>>
       this.handleDeliveryResult(claimed, frame.messageId, 'delivered')
       return
     }
     if (value.type === 'delivery_failed') {
-      const frame = value as Partial<Extract<A2aClientFrame, { type: 'delivery_failed' }>>
+      const frame = value as Partial<Extract<S2sClientFrame, { type: 'delivery_failed' }>>
       if (
         typeof frame.error !== 'string'
         || frame.error.length === 0
@@ -195,10 +195,10 @@ export class A2aRealtimeHub {
   }
 
   /** Claim one name for a socket: validate, register, then announce. */
-  private claim(socket: WebSocket, frame: Partial<Extract<A2aClientFrame, { type: 'hello' }>>): void {
+  private claim(socket: WebSocket, frame: Partial<Extract<S2sClientFrame, { type: 'hello' }>>): void {
     try {
-      if (frame.protocolVersion !== A2A_PROTOCOL_VERSION) {
-        throw new Error(`Hub requires protocol ${A2A_PROTOCOL_VERSION}`)
+      if (frame.protocolVersion !== S2S_PROTOCOL_VERSION) {
+        throw new Error(`Hub requires protocol ${S2S_PROTOCOL_VERSION}`)
       }
       if (typeof frame.project !== 'string' || typeof frame.name !== 'string') {
         throw new Error('project and name are required')
@@ -216,7 +216,7 @@ export class A2aRealtimeHub {
       const { self, peers } = this.presences.claim(project.name, frame.name, socket)
       this.send(socket, {
         type: 'claimed',
-        protocolVersion: A2A_PROTOCOL_VERSION,
+        protocolVersion: S2S_PROTOCOL_VERSION,
         project: self.project,
         self: { name: self.name, presenceId: self.presenceId },
         peers,
@@ -226,7 +226,7 @@ export class A2aRealtimeHub {
         peer: { name: self.name, presenceId: self.presenceId },
       })
     } catch (error) {
-      const code = frame.protocolVersion !== A2A_PROTOCOL_VERSION
+      const code = frame.protocolVersion !== S2S_PROTOCOL_VERSION
         ? 'protocol_mismatch'
         : error instanceof NameInUseError
           ? 'name_in_use'
@@ -242,8 +242,8 @@ export class A2aRealtimeHub {
 
   /** Append one message and deliver it to the current recipient snapshot. */
   private async handleMessage(
-    presence: A2aPresence,
-    frame: Partial<Extract<A2aClientFrame, { type: 'message' }>>,
+    presence: S2sPresence,
+    frame: Partial<Extract<S2sClientFrame, { type: 'message' }>>,
   ): Promise<void> {
     const requestId = typeof frame.requestId === 'string' ? frame.requestId : undefined
     try {
@@ -259,8 +259,8 @@ export class A2aRealtimeHub {
       if (frame.replyTo !== undefined && typeof frame.replyTo !== 'string') {
         throw new Error('invalid replyTo')
       }
-      let target: A2aMessageTarget
-      let recipients: A2aPresence[]
+      let target: S2sMessageTarget
+      let recipients: S2sPresence[]
       if (frame.target.type === 'agent') {
         if (typeof frame.target.name !== 'string') throw new Error('recipient name is required')
         const recipient = this.presences.get(presence.project, frame.target.name)
@@ -326,7 +326,7 @@ export class A2aRealtimeHub {
 
   /** Settle one pending delivery from the recipient's acknowledgment. */
   private handleDeliveryResult(
-    presence: A2aPresence,
+    presence: S2sPresence,
     messageId: unknown,
     status: 'delivered' | 'failed',
     error?: string,
@@ -359,7 +359,7 @@ export class A2aRealtimeHub {
   }
 
   /** Fail every pending delivery bound to a closing presence. */
-  private failDeliveriesFor(presence: A2aPresence): void {
+  private failDeliveriesFor(presence: S2sPresence): void {
     for (const [key, pending] of this.pendingDeliveries) {
       if (pending.recipientPresenceId !== presence.presenceId) continue
       this.pendingDeliveries.delete(key)
@@ -378,14 +378,14 @@ export class A2aRealtimeHub {
   }
 
   /** Send one frame to every presence of a project except one. */
-  private broadcast(project: string, excludedPresenceId: string, frame: A2aServerFrame): void {
+  private broadcast(project: string, excludedPresenceId: string, frame: S2sServerFrame): void {
     for (const presence of this.presences.connections(project)) {
       if (presence.presenceId !== excludedPresenceId) this.send(presence.socket, frame)
     }
   }
 
   /** Send one frame on an open socket. */
-  private send(socket: WebSocket, frame: A2aServerFrame): void {
+  private send(socket: WebSocket, frame: S2sServerFrame): void {
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame))
   }
 

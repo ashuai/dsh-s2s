@@ -1,5 +1,5 @@
 /**
- * Project registry over the a2a hub domain: metadata plus the per-project
+ * Project registry over the s2s hub domain: metadata plus the per-project
  * sequence counter seeded at creation. Presence and roster state are
  * in-memory (see presence.ts); the registry owns only what survives a hub
  * restart alongside the message history.
@@ -8,16 +8,16 @@
 
 import type { Domain } from '@deepseek-ai/dsh-storage-domain'
 import { z } from 'zod'
-import { A2aError } from '../error.ts'
+import { S2sError } from '../error.ts'
 import { PROJECT_NAME_RE } from './message-ref.ts'
-import type { a2aHubDomainSpec, a2aProjectRecord } from './spec.ts'
-import type { A2aProject } from './types.ts'
+import type { s2sHubDomainSpec, s2sProjectRecord } from './spec.ts'
+import type { S2sProject } from './types.ts'
 
 /** Registry errors with stable codes. */
-export class RegistryError extends A2aError {
+export class RegistryError extends S2sError {
   /** @param message - human-readable failure. */
   constructor(message: string) {
-    super(message, 'A2A_REGISTRY')
+    super(message, 'S2S_REGISTRY')
   }
 }
 
@@ -27,11 +27,11 @@ export class ProjectConflictError extends RegistryError {}
 /** The project does not exist (create it first). */
 export class UnknownProjectError extends RegistryError {}
 
-type HubDomain = Domain<typeof a2aHubDomainSpec>
+type HubDomain = Domain<typeof s2sHubDomainSpec>
 
-/** The project registry over one opened a2a domain. */
-export class A2aHubRegistry {
-  /** @param domain - the opened a2a hub domain. */
+/** The project registry over one opened s2s domain. */
+export class S2sHubRegistry {
+  /** @param domain - the opened s2s hub domain. */
   constructor(private readonly domain: HubDomain) {}
 
   /**
@@ -41,7 +41,7 @@ export class A2aHubRegistry {
    * @returns the created project.
    * @throws {ProjectConflictError} when the project already exists.
    */
-  async createProject(name: string, meta: { displayName?: string; description?: string; createdByCwd?: string } = {}): Promise<A2aProject> {
+  async createProject(name: string, meta: { displayName?: string; description?: string; createdByCwd?: string } = {}): Promise<S2sProject> {
     this.assertName(name)
     const projects = this.domain.table('projects')
     if (projects.get(name) !== undefined) {
@@ -79,7 +79,7 @@ export class A2aHubRegistry {
    * @param name - project name.
    * @returns the project, or `null` when unknown.
    */
-  getProject(name: string): A2aProject | null {
+  getProject(name: string): S2sProject | null {
     this.assertName(name)
     const record = this.domain.table('projects').get(name)
     return record === undefined ? null : this.projectView(name, record)
@@ -89,7 +89,7 @@ export class A2aHubRegistry {
    * List projects.
    * @returns projects sorted by name.
    */
-  listProjects(): A2aProject[] {
+  listProjects(): S2sProject[] {
     return [...this.domain.table('projects').entries()]
       .map(([name, record]) => this.projectView(name, record))
       .sort((left, right) => left.name.localeCompare(right.name))
@@ -103,7 +103,7 @@ export class A2aHubRegistry {
   }
 
   /** Project one stored row into its wire view. */
-  private projectView(name: string, record: z.infer<typeof a2aProjectRecord>): A2aProject {
+  private projectView(name: string, record: z.infer<typeof s2sProjectRecord>): S2sProject {
     return {
       name,
       ...(record.displayName === undefined ? {} : { displayName: record.displayName }),

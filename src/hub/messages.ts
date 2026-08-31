@@ -1,5 +1,5 @@
 /**
- * The hub message store over the a2a domain: append-only immutable history
+ * The hub message store over the s2s domain: append-only immutable history
  * with per-project monotonic sequences, msgId idempotency, project-scoped
  * `replyTo` resolution, and bounded history queries. Appends run on the
  * store's own chain (sequence allocation + inserts are one atomic slot), so
@@ -12,8 +12,8 @@ import { z } from 'zod'
 import { formatMessageRef, parseMessageRef, PROJECT_NAME_RE, AGENT_NAME_RE } from './message-ref.ts'
 import { validateMessageContent, type EncodedAttachment, type EncodedTextPayload } from './payload.ts'
 import { compositeKey } from './spec.ts'
-import type { a2aHubDomainSpec, a2aMessageRecord } from './spec.ts'
-import type { A2aHistoryPage, A2aHistoryQuery, A2aMessageTarget, A2aRealtimeMessage } from './types.ts'
+import type { s2sHubDomainSpec, s2sMessageRecord } from './spec.ts'
+import type { S2sHistoryPage, S2sHistoryQuery, S2sMessageTarget, S2sRealtimeMessage } from './types.ts'
 
 /** msgId idempotency-key rule (opaque machine key, not user-facing). */
 const MESSAGE_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/
@@ -28,32 +28,32 @@ export class MessageIdConflictError extends Error {}
 export class UnknownReplyTargetError extends Error {}
 
 /** One client-authored message draft, pre-validation. */
-export interface A2aMessageDraft {
+export interface S2sMessageDraft {
   readonly messageId: string
   readonly project: string
   readonly from: { name: string; presenceId: string }
-  readonly target: A2aMessageTarget
+  readonly target: S2sMessageTarget
   readonly payload: EncodedTextPayload
   readonly attachments: readonly EncodedAttachment[]
   readonly createdAt: number
   readonly replyTo?: string
 }
 
-type HubDomain = Domain<typeof a2aHubDomainSpec>
+type HubDomain = Domain<typeof s2sHubDomainSpec>
 
 /** Stored message row plus its composite key parts. */
 interface MessageRow {
   readonly project: string
   readonly sequence: number
-  readonly record: z.infer<typeof a2aMessageRecord>
+  readonly record: z.infer<typeof s2sMessageRecord>
 }
 
-/** The message store over one opened a2a domain. */
-export class A2aHubMessages {
+/** The message store over one opened s2s domain. */
+export class S2sHubMessages {
   /** Tail of the append chain: one append (check + allocate + insert) never interleaves with another. */
   private chain: Promise<void> = Promise.resolve()
 
-  /** @param domain - the opened a2a hub domain. */
+  /** @param domain - the opened s2s hub domain. */
   constructor(private readonly domain: HubDomain) {}
 
   /**
@@ -63,8 +63,8 @@ export class A2aHubMessages {
    * @param draft - the message draft.
    * @returns whether this call inserted, and the stored message.
    */
-  append(draft: A2aMessageDraft): Promise<{ inserted: boolean; message: A2aRealtimeMessage }> {
-    const job = async (): Promise<{ inserted: boolean; message: A2aRealtimeMessage }> => {
+  append(draft: S2sMessageDraft): Promise<{ inserted: boolean; message: S2sRealtimeMessage }> {
+    const job = async (): Promise<{ inserted: boolean; message: S2sRealtimeMessage }> => {
       const { attachments, contentBytes } = this.validateDraft(draft)
       const replyToSequence = this.resolveReply(draft.project, draft.replyTo)
       const byId = this.domain.table('message_ids')
@@ -80,7 +80,7 @@ export class A2aHubMessages {
         return { inserted: false, message: this.toMessage(row) }
       }
       const sequence = await this.allocateSequence(draft.project)
-      const record: z.infer<typeof a2aMessageRecord> = {
+      const record: z.infer<typeof s2sMessageRecord> = {
         msgId: draft.messageId,
         senderName: draft.from.name,
         senderPresenceId: draft.from.presenceId,
@@ -127,7 +127,7 @@ export class A2aHubMessages {
    * @param reference - the `<project>:<sequence>` reference.
    * @returns the message, or `null` when unknown.
    */
-  get(reference: string): A2aRealtimeMessage | null {
+  get(reference: string): S2sRealtimeMessage | null {
     const parsed = parseMessageRef(reference)
     if (parsed === null) throw new Error(`invalid message reference: ${reference}`)
     const row = this.rowAt(parsed.project, parsed.sequence)
@@ -139,7 +139,7 @@ export class A2aHubMessages {
    * @param query - project, cursors, sender filter, and limit.
    * @returns the matched messages in ascending sequence order.
    */
-  history(query: A2aHistoryQuery): A2aHistoryPage {
+  history(query: S2sHistoryQuery): S2sHistoryPage {
     if (!PROJECT_NAME_RE.test(query.project)) throw new Error(`invalid project: ${query.project}`)
     if (query.before !== undefined && query.after !== undefined) {
       throw new Error('history accepts before or after, not both')
@@ -237,7 +237,7 @@ export class A2aHubMessages {
   }
 
   /** Validate one draft's fields and content; returns the normalized attachments. */
-  private validateDraft(draft: A2aMessageDraft): { attachments: EncodedAttachment[]; contentBytes: number } {
+  private validateDraft(draft: S2sMessageDraft): { attachments: EncodedAttachment[]; contentBytes: number } {
     if (!MESSAGE_ID_RE.test(draft.messageId)) throw new Error(`invalid messageId: ${draft.messageId}`)
     if (!PROJECT_NAME_RE.test(draft.project)) throw new Error(`invalid project: ${draft.project}`)
     if (!AGENT_NAME_RE.test(draft.from.name)) throw new Error(`invalid sender name: ${draft.from.name}`)
@@ -267,7 +267,7 @@ export class A2aHubMessages {
   /** Whether a stored row equals one draft (idempotency match). */
   private matches(
     row: MessageRow,
-    draft: A2aMessageDraft,
+    draft: S2sMessageDraft,
     attachments: EncodedAttachment[],
     replyToSequence: number | null,
   ): boolean {
@@ -294,7 +294,7 @@ export class A2aHubMessages {
   }
 
   /** Project one stored row into its wire message, verifying size metadata. */
-  private toMessage(row: MessageRow): A2aRealtimeMessage {
+  private toMessage(row: MessageRow): S2sRealtimeMessage {
     const contentBytes = this.contentBytesOf(row)
     if (contentBytes !== row.record.contentBytes) {
       throw new Error('stored message content size does not match metadata')

@@ -19,7 +19,7 @@ import {
 } from './hub/payload.ts'
 
 /** One materialized attachment: name, byte count, and the local file path. */
-export interface A2aAttachmentReference {
+export interface S2sAttachmentReference {
   readonly name: string
   readonly path: string
   readonly uncompressedBytes: number
@@ -93,14 +93,14 @@ export async function materializeAttachments(
   project: string,
   messageRef: string,
   attachments: readonly { name: string; bytes: Buffer }[],
-): Promise<A2aAttachmentReference[]> {
+): Promise<S2sAttachmentReference[]> {
   if (attachments.length === 0) return []
   const root = path.join(tmpdir(), 'dsh-a2a', project, messageRef)
   await mkdir(root, { recursive: true })
   const realRoot = await realpath(root)
   const outputDirectory = await mkdtemp(path.join(realRoot, 'attach-'))
   try {
-    const references: A2aAttachmentReference[] = []
+    const references: S2sAttachmentReference[] = []
     for (const attachment of attachments) {
       const filePath = path.join(outputDirectory, attachment.name)
       await writeFile(filePath, attachment.bytes, { flag: 'wx', mode: 0o600 })
@@ -117,7 +117,7 @@ export async function materializeAttachments(
     } catch (cleanupError) {
       throw new AggregateError(
         [error, cleanupError],
-        'failed to materialize and clean up A2A attachments',
+        'failed to materialize and clean up S2S attachments',
       )
     }
     throw error

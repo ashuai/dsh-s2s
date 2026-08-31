@@ -10,12 +10,12 @@ import type { InvariantFailure, InvariantInstaller } from '@deepseek-ai/dsh-inva
 const PACKAGE_NAME = '@dpskh/a2a'
 
 /** Cordis companion plugin name. */
-export const name = 'a2a-invariant'
+export const name = 's2s-invariant'
 /** Service required before the companion can reserve package ownership. */
 export const inject = ['invariants']
 
 /**
- * Assert the presence stream stays well-formed: every `a2a/presence-changed`
+ * Assert the presence stream stays well-formed: every `s2s/presence-changed`
  * carries a non-empty project, agent id, name, and presence id, and the
  * connected state never flips twice in a row (connect when connected, or
  * disconnect when not, both indicate a membership bookkeeping bug).
@@ -23,18 +23,18 @@ export const inject = ['invariants']
 const install: InvariantInstaller = (ctx: Context, fail: InvariantFailure) => {
   // Per-presence state: one process may host several presences.
   const connected = new Map<string, boolean>()
-  ctx.on('a2a/presence-changed', (payload) => {
+  ctx.on('s2s/presence-changed', (payload) => {
     if (
       payload.project.length === 0
       || payload.agentId.length === 0
       || payload.name.length === 0
       || payload.presenceId.length === 0
     ) {
-      fail('a2a/presence-changed must carry non-empty project, agentId, name, and presenceId')
+      fail('s2s/presence-changed must carry non-empty project, agentId, name, and presenceId')
     }
     const key = `${payload.project}/${payload.name}`
     if (payload.joined === connected.get(key)) {
-      fail(`a2a/presence-changed repeated ${payload.joined ? 'connect' : 'disconnect'} state for ${key}`)
+      fail(`s2s/presence-changed repeated ${payload.joined ? 'connect' : 'disconnect'} state for ${key}`)
     }
     connected.set(key, payload.joined)
   }, { global: true })

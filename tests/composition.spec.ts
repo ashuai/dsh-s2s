@@ -1,6 +1,6 @@
 /**
  * Real composition: the entry plugin over the storage stack, with a hub
- * host, mesh clients, and the tool/command surfaces — one connected
+ * host, mesh clients, and the tool surface — one connected
  * workspace receiving an injected message end to end.
  */
 
@@ -9,8 +9,8 @@ import { Context } from '@deepseek-ai/cordis'
 import Storage from '@deepseek-ai/dsh-storage'
 import { SqliteStorageBackend } from '@deepseek-ai/dsh-storage-sqlite'
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
-import { apply as a2aApply, A2aHubHostService, decodeTextPayload } from '../src/index.ts'
-import { A2aMeshService } from '../src/index.ts'
+import { apply as s2sApply, S2sHubHostService, decodeTextPayload } from '../src/index.ts'
+import { S2sMeshService } from '../src/index.ts'
 
 /** Mount the storage stack manually (the workspace-spec pattern). */
 async function mountStorage(ctx: Context): Promise<void> {
@@ -25,7 +25,7 @@ async function mountStorage(ctx: Context): Promise<void> {
 async function harness(options: { mesh?: boolean } = {}) {
   const ctx = new Context()
   await mountStorage(ctx)
-  await ctx.plugin(a2aApply, {
+  await ctx.plugin(s2sApply, {
     hub: { host: '127.0.0.1', port: 0 },
     ...(options.mesh === false
       ? {}
@@ -33,7 +33,7 @@ async function harness(options: { mesh?: boolean } = {}) {
         mesh: { hubUrl: 'http://127.0.0.1:0', project: 'mesh', agentId: 'agent-a' },
       }),
   })
-  const hub = ctx.get('a2aHub')
+  const hub = ctx.get('s2sHub')
   // The hub binds on an ephemeral port asynchronously; wait for it.
   if (hub !== undefined) {
     await vi.waitFor(() => {
@@ -44,7 +44,7 @@ async function harness(options: { mesh?: boolean } = {}) {
   return { ctx, hub, port }
 }
 
-describe('a2a composition', () => {
+describe('s2s composition', () => {
   it('mounts the hub host and opens the registry/messages over sqlite', async () => {
     const { ctx, hub, port } = await harness({ mesh: false })
     expect(hub).toBeDefined()
@@ -53,7 +53,7 @@ describe('a2a composition', () => {
     await ctx.fiber.dispose()
   })
 
-  it('mounts the mesh client with the tool and command surfaces', async () => {
+  it('mounts the mesh client with the tool surface', async () => {
     const ctx = new Context()
     await mountStorage(ctx)
     const tools: unknown[] = []
@@ -61,38 +61,26 @@ describe('a2a composition', () => {
       tools.push(definition)
       return () => {}
     } } as never)
-    type CommandDef = { name: string; handler: (invocation: { agent: { id: string }; rawInput: string }) => Promise<unknown> }
-    const commands: Array<{ definition: CommandDef }> = []
-    ctx.provide('commands', { register: (definition: CommandDef) => {
-      commands.push({ definition })
-      return () => {}
-    } } as never)
     const agent = { id: 'agent-a', status: 'idle', followup: vi.fn(), inject: vi.fn() }
     ctx.provide('agents', { get: () => agent } as never)
-    await ctx.plugin(a2aApply, {
+    await ctx.plugin(s2sApply, {
       hub: { host: '127.0.0.1', port: 0 },
       mesh: { hubUrl: 'http://127.0.0.1:1', project: 'mesh', agentId: 'agent-a' },
     })
-    const mesh = ctx.get('a2aMesh') as A2aMeshService
+    const mesh = ctx.get('s2sMesh') as S2sMeshService
     expect(mesh).toBeDefined()
     await vi.waitFor(() => {
       expect(tools).toHaveLength(3)
     }, { timeout: 2000 })
-    expect(tools.map(t => (t as { name: string }).name)).toEqual(['a2a_peers', 'a2a_message', 'a2a_history'])
-    expect(commands).toHaveLength(1)
-    expect(commands[0]!.definition.name).toBe('a2a')
-    // The registered handler routes through the mesh service (the fake hub
-    // URL makes the call fail into a command error rather than throwing).
-    const outcome = await commands[0]!.definition.handler({ agent: { id: 'agent-a' }, rawInput: 'hub status' }) as { kind: string }
-    expect(['success', 'error']).toContain(outcome.kind)
+    expect(tools.map(t => (t as { name: string }).name)).toEqual(['s2s_peers', 's2s_message', 's2s_history'])
     await ctx.fiber.dispose()
   })
 
   it('mounts the hub service without a server config', async () => {
     const ctx = new Context()
     await mountStorage(ctx)
-    await ctx.plugin(A2aHubHostService)
-    const hub = ctx.get('a2aHub') as A2aHubHostService
+    await ctx.plugin(S2sHubHostService)
+    const hub = ctx.get('s2sHub') as S2sHubHostService
     expect(hub.port).toBeUndefined()
     expect(hub.url).toBeUndefined()
     await vi.waitFor(() => {
@@ -104,8 +92,8 @@ describe('a2a composition', () => {
   it('mounts the hub server with a default host', async () => {
     const ctx = new Context()
     await mountStorage(ctx)
-    await ctx.plugin(a2aApply, { hub: { port: 0 } })
-    const hub = ctx.get('a2aHub') as A2aHubHostService
+    await ctx.plugin(s2sApply, { hub: { port: 0 } })
+    const hub = ctx.get('s2sHub') as S2sHubHostService
     await vi.waitFor(() => {
       if (hub.port === undefined) throw new Error('hub not listening')
     }, { timeout: 2000 })
@@ -117,8 +105,8 @@ describe('a2a composition', () => {
   it('mounts the hub with a maxPort range', async () => {
     const ctx = new Context()
     await mountStorage(ctx)
-    await ctx.plugin(a2aApply, { hub: { host: '127.0.0.1', port: 0, maxPort: 65535 } })
-    const hub = ctx.get('a2aHub') as A2aHubHostService
+    await ctx.plugin(s2sApply, { hub: { host: '127.0.0.1', port: 0, maxPort: 65535 } })
+    const hub = ctx.get('s2sHub') as S2sHubHostService
     await vi.waitFor(() => {
       if (hub.port === undefined) throw new Error('hub not listening')
     }, { timeout: 2000 })
@@ -132,11 +120,11 @@ describe('a2a composition', () => {
     await mountStorage(ctx)
     const agent = { id: 'agent-a', status: 'idle', followup: vi.fn(), inject: vi.fn() }
     ctx.provide('agents', { get: () => agent } as never)
-    await ctx.plugin(a2aApply, {
+    await ctx.plugin(s2sApply, {
       mesh: { hubUrl: 'http://127.0.0.1:1', project: 'mesh', agentId: 'agent-a' },
     })
-    expect(ctx.get('a2aHub')).toBeUndefined()
-    expect(ctx.get('a2aMesh')).toBeDefined()
+    expect(ctx.get('s2sHub')).toBeUndefined()
+    expect(ctx.get('s2sMesh')).toBeDefined()
     await ctx.fiber.dispose()
   })
 
@@ -145,16 +133,16 @@ describe('a2a composition', () => {
     await mountStorage(ctx)
     const agent = { id: 'agent-a', status: 'idle', followup: vi.fn(), inject: vi.fn() }
     ctx.provide('agents', { get: () => agent } as never)
-    await ctx.plugin(a2aApply, {
+    await ctx.plugin(s2sApply, {
       hub: { host: '127.0.0.1', port: 0 },
       mesh: { project: 'mesh', agentId: 'agent-a' },
     })
-    const hub = ctx.get('a2aHub') as A2aHubHostService
+    const hub = ctx.get('s2sHub') as S2sHubHostService
     await vi.waitFor(() => {
       if (hub.port === undefined) throw new Error('hub not listening yet')
     }, { timeout: 2000 })
     await hub.registryService.createProject('mesh')
-    const mesh = ctx.get('a2aMesh') as A2aMeshService
+    const mesh = ctx.get('s2sMesh') as S2sMeshService
     const status = await mesh.connect('agent-a')
     expect(status.connected).toBe(true)
     if (!status.connected) throw new Error('expected a live mesh connection')
@@ -168,10 +156,10 @@ describe('a2a composition', () => {
     await mountStorage(ctx)
     const agent = { id: 'agent-a', status: 'idle', followup: vi.fn(), inject: vi.fn() }
     ctx.provide('agents', { get: () => agent } as never)
-    await ctx.plugin(a2aApply, {
+    await ctx.plugin(s2sApply, {
       mesh: { project: 'mesh', agentId: 'agent-a' },
     })
-    const mesh = ctx.get('a2aMesh') as A2aMeshService
+    const mesh = ctx.get('s2sMesh') as S2sMeshService
     await expect(mesh.connect('agent-a')).rejects.toThrow(/no hubUrl/)
     await ctx.fiber.dispose()
   })
@@ -181,7 +169,7 @@ describe('a2a composition', () => {
     await mountStorage(ctx)
     // 0.2 fields name behaviors that no longer exist; they are ignored so a
     // copied old cordis.yml keeps loading without a breaking error.
-    await expect(ctx.plugin(a2aApply, {
+    await expect(ctx.plugin(s2sApply, {
       mesh: {
         hubUrl: 'http://127.0.0.1:1',
         project: 'mesh',
@@ -199,12 +187,12 @@ describe('a2a composition', () => {
   it('drives a full round trip through the composed services', async () => {
     const { ctx, port } = await harness({ mesh: false })
     try {
-      const hub = ctx.get('a2aHub') as A2aHubHostService
+      const hub = ctx.get('s2sHub') as S2sHubHostService
       await hub.registryService.createProject('mesh')
       const senderAgent = { id: 'sender', status: 'idle', followup: vi.fn(), inject: vi.fn() }
       const sender = new Context()
       sender.provide('agents', { get: () => senderAgent } as never)
-      const senderMesh = new A2aMeshService(sender, {
+      const senderMesh = new S2sMeshService(sender, {
         hubUrl: `http://127.0.0.1:${port}`,
         project: 'mesh',
       })
@@ -243,9 +231,9 @@ it('logs the domain-open failure loud when the hub cannot start', async () => {
   ctx.provide('storageDomain', {
     open: async () => { throw new Error('version mismatch: medium stamped 2, spec 3') },
   } as never)
-  await ctx.plugin(a2aApply, { hub: { host: '127.0.0.1', port: 0 } })
+  await ctx.plugin(s2sApply, { hub: { host: '127.0.0.1', port: 0 } })
   await vi.waitFor(() => {
-    expect(errors.some(message => String(message).includes('a2aHub: failed to open'))).toBe(true)
+    expect(errors.some(message => String(message).includes('s2sHub: failed to open'))).toBe(true)
   }, { timeout: 2000 })
   await ctx.fiber.dispose()
 })

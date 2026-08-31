@@ -10,7 +10,7 @@
 import type { EncodedAttachment, EncodedTextPayload } from './payload.ts'
 
 /** One currently present agent in a project. */
-export interface A2aPeer {
+export interface S2sPeer {
   /** The claimed roster name, unique within its project. */
   readonly name: string
   /** The presence id assigned by the hub at claim; unique per connection. */
@@ -18,17 +18,17 @@ export interface A2aPeer {
 }
 
 /** A message target as stored in history: direct name, or project broadcast. */
-export type A2aMessageTarget =
+export type S2sMessageTarget =
   | { type: 'agent'; name: string; presenceId?: string }
   | { type: 'project' }
 
 /** The target shape a sender submits: current name, or project broadcast. */
-export type A2aMessageRequestTarget =
+export type S2sMessageRequestTarget =
   | { type: 'agent'; name: string }
   | { type: 'project' }
 
 /** One immutable project-scoped message, as persisted and delivered. */
-export interface A2aRealtimeMessage {
+export interface S2sRealtimeMessage {
   /** Opaque sender-chosen idempotency key (retrying the same body returns the original message). */
   readonly messageId: string
   /** Friendly reference "<project>:<sequence>" (for example `demo:42`). */
@@ -37,8 +37,8 @@ export interface A2aRealtimeMessage {
   /** Monotonic per-project sequence, assigned by the hub at append. */
   readonly sequence: number
   /** The sending presence at append time. */
-  readonly from: A2aPeer
-  readonly target: A2aMessageTarget
+  readonly from: S2sPeer
+  readonly target: S2sMessageTarget
   readonly payload: EncodedTextPayload
   readonly attachments: readonly EncodedAttachment[]
   readonly createdAt: number
@@ -47,12 +47,12 @@ export interface A2aRealtimeMessage {
 }
 
 /** One delivery outcome reported to the sender. */
-export type A2aDeliveryEvent =
+export type S2sDeliveryEvent =
   | { messageId: string; to: string; status: 'delivered' | 'disconnected' }
   | { messageId: string; to: string; status: 'failed'; error: string }
 
 /** History query filters. */
-export interface A2aHistoryQuery {
+export interface S2sHistoryQuery {
   readonly project: string
   /** Only messages before this reference (exclusive). */
   readonly before?: string
@@ -65,12 +65,12 @@ export interface A2aHistoryQuery {
 }
 
 /** One history page: newest-first, newest-capped by decoded byte budget. */
-export interface A2aHistoryPage {
-  readonly messages: readonly A2aRealtimeMessage[]
+export interface S2sHistoryPage {
+  readonly messages: readonly S2sRealtimeMessage[]
 }
 
 /** One mesh project. */
-export interface A2aProject {
+export interface S2sProject {
   readonly name: string
   readonly displayName?: string
   readonly description?: string
@@ -80,13 +80,13 @@ export interface A2aProject {
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
-    a2a: A2aMessageSource
+    s2s: S2sMessageSource
   }
 }
 
 /** Producer provenance of an injected mesh message. */
-export interface A2aMessageSource {
-  kind: 'a2a'
+export interface S2sMessageSource {
+  kind: 's2s'
   /** The message's msgId, used by consumers for idempotent delivery. */
   msgId: string
   /** The project-scoped friendly reference. */

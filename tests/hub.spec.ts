@@ -17,13 +17,13 @@ import {
   PayloadTooLargeError,
 } from '../src/hub/payload.ts'
 import { formatMessageRef, parseMessageRef } from '../src/hub/message-ref.ts'
-import { a2aHubDomainSpec } from '../src/hub/spec.ts'
-import { A2aHubRegistry, ProjectConflictError } from '../src/hub/registry.ts'
-import { A2aHubMessages, MessageIdConflictError, UnknownReplyTargetError, MAX_HISTORY_BYTES } from '../src/hub/messages.ts'
-import { A2aHubServer } from '../src/hub/server.ts'
-import { A2aHubClient, probeHub } from '../src/hub/client.ts'
+import { s2sHubDomainSpec } from '../src/hub/spec.ts'
+import { S2sHubRegistry, ProjectConflictError } from '../src/hub/registry.ts'
+import { S2sHubMessages, MessageIdConflictError, UnknownReplyTargetError, MAX_HISTORY_BYTES } from '../src/hub/messages.ts'
+import { S2sHubServer } from '../src/hub/server.ts'
+import { S2sHubClient, probeHub } from '../src/hub/client.ts'
 
-/** Boot a context with the storage hub, a real SQLite backend, and the a2a domain. */
+/** Boot a context with the storage hub, a real SQLite backend, and the s2s domain. */
 async function harness() {
   const ctx = new Context()
   await ctx.plugin(Storage)
@@ -31,20 +31,20 @@ async function harness() {
   ctx.storage.backend.register('sqlite', backend)
   const facility = new DomainFacility(ctx, { backend: 'sqlite' })
   ctx.storage.mount('domain', facility)
-  const domain = await facility.open(a2aHubDomainSpec)
-  const registry = new A2aHubRegistry(domain)
-  const messages = new A2aHubMessages(domain)
+  const domain = await facility.open(s2sHubDomainSpec)
+  const registry = new S2sHubRegistry(domain)
+  const messages = new S2sHubMessages(domain)
   return { ctx, domain, registry, messages }
 }
 
 /** Ensure one project exists. */
-async function ensureProject(registry: A2aHubRegistry, project: string): Promise<void> {
+async function ensureProject(registry: S2sHubRegistry, project: string): Promise<void> {
   if (registry.listProjects().some(p => p.name === project)) return
   await registry.createProject(project)
 }
 
 /** One appendable draft over a project. */
-function draft(project: string, messageId: string, text = 'hello', overrides: Partial<Parameters<A2aHubMessages['append']>[0]> = {}) {
+function draft(project: string, messageId: string, text = 'hello', overrides: Partial<Parameters<S2sHubMessages['append']>[0]> = {}) {
   return {
     messageId,
     project,
@@ -205,7 +205,7 @@ describe('message store', () => {
         createdAt: index + 1,
       })
     }
-    const refs = (page: ReturnType<A2aHubMessages['history']>) => page.messages.map(m => m.messageRef)
+    const refs = (page: ReturnType<S2sHubMessages['history']>) => page.messages.map(m => m.messageRef)
     expect(refs(messages.history({ project: 'history', limit: 2 }))).toEqual(['history:2', 'history:3'])
     expect(refs(messages.history({ project: 'history', before: 'history:3', limit: 2 }))).toEqual(['history:1', 'history:2'])
     expect(refs(messages.history({ project: 'history', after: 'history:1', limit: 1 }))).toEqual(['history:2'])
@@ -265,9 +265,9 @@ describe('project registry', () => {
 describe('hub server and client', () => {
   it('serves projects, history, and the meta probe over HTTP', async () => {
     const { ctx, registry, messages } = await harness()
-    const server = new A2aHubServer({ host: '127.0.0.1', port: 0, registry, messages })
+    const server = new S2sHubServer({ host: '127.0.0.1', port: 0, registry, messages })
     const port = await server.listen()
-    const client = new A2aHubClient({ baseUrl: `http://127.0.0.1:${port}` })
+    const client = new S2sHubClient({ baseUrl: `http://127.0.0.1:${port}` })
     try {
       const meta = await probeHub(client.url)
       expect(meta.protocolVersion).toBe(3)
@@ -294,9 +294,9 @@ describe('hub server and client', () => {
 
   it('refuses project deletion while presences are active', async () => {
     const { ctx, registry, messages } = await harness()
-    const server = new A2aHubServer({ host: '127.0.0.1', port: 0, registry, messages })
+    const server = new S2sHubServer({ host: '127.0.0.1', port: 0, registry, messages })
     const port = await server.listen()
-    const client = new A2aHubClient({ baseUrl: `http://127.0.0.1:${port}` })
+    const client = new S2sHubClient({ baseUrl: `http://127.0.0.1:${port}` })
     await registry.createProject('busy')
     // No realtime client is connected, so deletion succeeds; the presence
     // guard is exercised by the realtime spec.

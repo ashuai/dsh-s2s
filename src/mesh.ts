@@ -1,5 +1,5 @@
 /**
- * The mesh client service (`ctx.a2aMesh`): one workspace's realtime
+ * The mesh client service (`ctx.s2sMesh`): one workspace's realtime
  * presences. Each joined agent owns one WebSocket presence (project +
  * roster name); inbound messages are pushed serially and injected into the
  * owning agent's session (follow-up turn when idle, plain context when
@@ -15,24 +15,24 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { settingsNamespace, type SettingsScope } from '@deepseek-ai/dsh-settings'
-import { A2aActivityTracker } from './activity.ts'
-import { materializeAttachments, snapshotAttachments, type A2aAttachmentReference } from './attachments.ts'
-import { A2aError } from './error.ts'
-import { A2aHubClient, probeHub } from './hub/client.ts'
-import { A2aConnection } from './hub/connection.ts'
+import { S2sActivityTracker } from './activity.ts'
+import { materializeAttachments, snapshotAttachments, type S2sAttachmentReference } from './attachments.ts'
+import { S2sError } from './error.ts'
+import { S2sHubClient, probeHub } from './hub/client.ts'
+import { S2sConnection } from './hub/connection.ts'
 import { decodeBinaryPayload, decodeTextPayload } from './hub/payload.ts'
 import type {
-  A2aDeliveryEvent,
-  A2aHistoryQuery,
-  A2aMessageRequestTarget,
-  A2aPeer,
-  A2aProject,
-  A2aRealtimeMessage,
+  S2sDeliveryEvent,
+  S2sHistoryQuery,
+  S2sMessageRequestTarget,
+  S2sPeer,
+  S2sProject,
+  S2sRealtimeMessage,
 } from './hub/types.ts'
-import type { A2aPeerActivity } from './view.ts'
+import type { S2sPeerActivity } from './view.ts'
 
 /** Browser-facing snapshot invalidation scope. */
-export type A2aChange =
+export type S2sChange =
   | { readonly scope: 'session'; readonly agentId: string }
   | { readonly scope: 'all' }
 
@@ -44,7 +44,7 @@ declare module '@deepseek-ai/cordis' {
      * and the new connected state.
      * @mode emit
      */
-    'a2a/presence-changed'(payload: {
+    's2s/presence-changed'(payload: {
       project: string
       agentId: string
       name: string
@@ -52,17 +52,17 @@ declare module '@deepseek-ai/cordis' {
       joined: boolean
     }): void
     /**
-     * An A2A status view became stale.
+     * An S2S status view became stale.
      * @param change - one owning session, or every session after a project change.
      * @mode emit
      */
-    'a2a/change'(change: A2aChange): void
+    's2s/change'(change: S2sChange): void
     /**
      * A delivery outcome for one of this workspace's sends.
      * @param payload - the delivery event as reported by the hub.
      * @mode emit
      */
-    'a2a/delivery'(payload: A2aDeliveryEvent): void
+    's2s/delivery'(payload: S2sDeliveryEvent): void
   }
 }
 
@@ -87,7 +87,7 @@ export interface MeshConfig {
    * Remember each agent's last successful connection under its session id
    * and reconnect it when the agent registers — the GUI path, where session
    * ids are dynamic and no static `agentId` is configured. Records live in
-   * the `a2a-connections` settings namespace; an explicit disconnect forgets
+   * the `s2s-connections` settings namespace; an explicit disconnect forgets
    * its record. Requires a mounted settings service. Defaults to false.
    */
   readonly persistConnections?: boolean
@@ -115,10 +115,10 @@ export const DEFAULT_PROJECT = 'main'
 /** The outbound reply guidance shared by the message tool and commands. */
 export const ASYNC_REPLY_GUIDANCE =
   'Replies arrive automatically. After sending, continue independent work; '
-  + 'if blocked, end the current turn. Never wait, sleep, or poll a2a_history for a reply.'
+  + 'if blocked, end the current turn. Never wait, sleep, or poll s2s_history for a reply.'
 
 /** One decoded message view (payload and attachment bytes decoded). */
-export type A2aMessageView = Omit<A2aRealtimeMessage, 'payload' | 'attachments'> & {
+export type S2sMessageView = Omit<S2sRealtimeMessage, 'payload' | 'attachments'> & {
   readonly text: string
   readonly attachments: readonly { name: string; bytes: Buffer }[]
 }
@@ -128,33 +128,33 @@ interface Membership {
   readonly agentId: string
   readonly project: string
   readonly name: string
-  connection: A2aConnection | undefined
+  connection: S2sConnection | undefined
   /** Whether an unexpected drop should reconnect. */
   desired: boolean
   reconnectTimer: ReturnType<typeof setTimeout> | undefined
   reconnectDelayMs: number
   /** Conversation-activity ledger driving the graph animations. */
-  readonly activity: A2aActivityTracker
+  readonly activity: S2sActivityTracker
 }
 
 /** One agent's current status. */
-export type A2aMeshStatus =
+export type S2sMeshStatus =
   | {
     readonly connected: false
     readonly peers: readonly []
-    readonly projects: readonly A2aProject[]
+    readonly projects: readonly S2sProject[]
   }
   | {
     readonly connected: true
     readonly project: string
     readonly name: string
     readonly presenceId: string
-    readonly peers: readonly A2aPeer[]
-    readonly projects: readonly A2aProject[]
+    readonly peers: readonly S2sPeer[]
+    readonly projects: readonly S2sProject[]
     /** Local conversation activity: self plus per-peer (keyed by presence id). */
     readonly activity: {
-      readonly self: A2aPeerActivity
-      readonly peers: Readonly<Record<string, A2aPeerActivity>>
+      readonly self: S2sPeerActivity
+      readonly peers: Readonly<Record<string, S2sPeerActivity>>
     }
   }
 
@@ -165,11 +165,11 @@ export type A2aMeshStatus =
  * default resolves through the configured `agentId`, and callers that know
  * their session (commands, tools, the web domain) pass it explicitly.
  */
-export class A2aMeshService extends Service {
+export class S2sMeshService extends Service {
   static inject = ['agents']
 
   private readonly config: MeshConfig
-  private client: A2aHubClient | undefined
+  private client: S2sHubClient | undefined
   private readonly memberships = new Map<string, Membership>()
   private lifecycleListening = false
   /** Persisted per-session connections, when `persistConnections` and settings are mounted. */
@@ -180,13 +180,13 @@ export class A2aMeshService extends Service {
    * @param config - mesh membership configuration.
    */
   constructor(ctx: Context, config: MeshConfig) {
-    super(ctx, 'a2aMesh')
+    super(ctx, 's2sMesh')
     this.config = config
     if (config.persistConnections) {
       // The settings service is optional: without it, connection memory is
       // simply unavailable and the mesh behaves exactly as composed.
       ctx.inject(['settings'], (sctx) => {
-        this.connectionScope = sctx.settings.register(settingsNamespace('a2a-connections'), ConnectionsSchema)
+        this.connectionScope = sctx.settings.register(settingsNamespace('s2s-connections'), ConnectionsSchema)
         sctx.effect(() => () => {
           this.connectionScope = undefined
         })
@@ -206,7 +206,7 @@ export class A2aMeshService extends Service {
         }
         await Promise.all(Array.from(this.memberships.values(), membership => this.closeConnection(membership)))
       }
-    }, 'a2aMesh.lifetime')
+    }, 's2sMesh.lifetime')
   }
 
   /**
@@ -214,19 +214,19 @@ export class A2aMeshService extends Service {
    * an in-process hub host, whose port is only known after its async bind —
    * hence the lazy resolution instead of a constructor-time client.
    */
-  private async hubClient(): Promise<A2aHubClient> {
+  private async hubClient(): Promise<S2sHubClient> {
     const configured = this.config.hubUrl
     if (configured === undefined) {
-      const hub = this.ctx.get('a2aHub')
+      const hub = this.ctx.get('s2sHub')
       const url = hub?.url
       if (url === undefined) {
-        throw new A2aError('mesh has no hubUrl and no in-process hub is listening', 'A2A_CLIENT_CONNECT')
+        throw new S2sError('mesh has no hubUrl and no in-process hub is listening', 'S2S_CLIENT_CONNECT')
       }
       if (this.client === undefined || this.client.url !== url) {
-        this.client = new A2aHubClient({ baseUrl: url })
+        this.client = new S2sHubClient({ baseUrl: url })
       }
     } else if (this.client === undefined || this.client.url !== configured) {
-      this.client = new A2aHubClient({ baseUrl: configured })
+      this.client = new S2sHubClient({ baseUrl: configured })
     }
     await probeHub(this.client.url)
     return this.client
@@ -243,7 +243,7 @@ export class A2aMeshService extends Service {
    * agent id.
    * @returns the membership status.
    */
-  async connect(agentId?: string, project?: string, name?: string): Promise<A2aMeshStatus> {
+  async connect(agentId?: string, project?: string, name?: string): Promise<S2sMeshStatus> {
     const resolved = this.resolveAgentId(agentId)
     const resolvedProject = project ?? this.config.project ?? DEFAULT_PROJECT
     const resolvedName = name ?? this.config.name ?? resolved
@@ -263,8 +263,8 @@ export class A2aMeshService extends Service {
       desired: true,
       reconnectTimer: undefined,
       reconnectDelayMs: this.config.reconnectMs ?? 500,
-      activity: new A2aActivityTracker(() => {
-        this.ctx.emit('a2a/change', { scope: 'session', agentId: resolved })
+      activity: new S2sActivityTracker(() => {
+        this.ctx.emit('s2s/change', { scope: 'session', agentId: resolved })
       }),
     }
     this.memberships.set(resolved, membership)
@@ -298,7 +298,7 @@ export class A2aMeshService extends Service {
     const presenceId = membership.connection?.self.presenceId
     await this.closeConnection(membership)
     if (presenceId !== undefined) {
-      this.ctx.emit('a2a/presence-changed', {
+      this.ctx.emit('s2s/presence-changed', {
         project: membership.project,
         agentId: membership.agentId,
         name: membership.name,
@@ -309,7 +309,7 @@ export class A2aMeshService extends Service {
     if (this.config.persistConnections) {
       await this.forgetConnection(membership.agentId)
     }
-    this.ctx.emit('a2a/change', { scope: 'session', agentId: membership.agentId })
+    this.ctx.emit('s2s/change', { scope: 'session', agentId: membership.agentId })
     return true
   }
 
@@ -317,9 +317,9 @@ export class A2aMeshService extends Service {
    * The current roster of one agent's presence.
    * @param agentId - the agent id; defaults to the configured `agentId`.
    * @returns peers sorted by name.
-   * @throws {A2aError} when the agent is not connected.
+   * @throws {S2sError} when the agent is not connected.
    */
-  peers(agentId?: string): A2aPeer[] {
+  peers(agentId?: string): S2sPeer[] {
     return this.resolveConnection(agentId).peers()
   }
 
@@ -333,16 +333,16 @@ export class A2aMeshService extends Service {
    */
   async message(options: {
     from?: string
-    target: A2aMessageRequestTarget
+    target: S2sMessageRequestTarget
     text: string
     attachments?: readonly string[]
     replyTo?: string
     messageId?: string
-  }): Promise<{ message: A2aMessageView; recipients: readonly string[] }> {
+  }): Promise<{ message: S2sMessageView; recipients: readonly string[] }> {
     const membership = this.resolveMembership(options.from)
     const connection = membership.connection
     if (connection === undefined) {
-      throw new A2aError('not connected: run /a2a connect <project> --as <name> first', 'A2A_CLIENT_CONNECT')
+      throw new S2sError('not connected: run /s2s connect <project> --as <name> first', 'S2S_CLIENT_CONNECT')
     }
     const encoded = await snapshotAttachments(options.attachments ?? [])
     const accepted = await connection.send({
@@ -365,7 +365,7 @@ export class A2aMeshService extends Service {
    * @param query - cursors, sender filter, and limit (project is implied).
    * @returns the decoded messages in ascending sequence order.
    */
-  async history(agentId: string | undefined, query?: Omit<A2aHistoryQuery, 'project'>): Promise<A2aMessageView[]> {
+  async history(agentId: string | undefined, query?: Omit<S2sHistoryQuery, 'project'>): Promise<S2sMessageView[]> {
     const connection = this.resolveConnection(agentId)
     const page = await (await this.hubClient()).history({
       project: connection.project,
@@ -381,7 +381,7 @@ export class A2aMeshService extends Service {
    * `agentId`.
    * @returns the status view.
    */
-  async status(agentId?: string): Promise<A2aMeshStatus> {
+  async status(agentId?: string): Promise<S2sMeshStatus> {
     const resolved = this.resolveOptionalAgentId(agentId)
     const membership = resolved === undefined ? undefined : this.memberships.get(resolved)
     if (membership === undefined || membership.connection === undefined) {
@@ -391,7 +391,7 @@ export class A2aMeshService extends Service {
     const connection = membership.connection
     const peers = connection.peers()
     const agent = this.owningAgent(membership.agentId)
-    const peerActivities: Record<string, A2aPeerActivity> = {}
+    const peerActivities: Record<string, S2sPeerActivity> = {}
     for (const peer of peers) peerActivities[peer.presenceId] = membership.activity.peerActivity(peer.name)
     return {
       connected: true,
@@ -413,9 +413,9 @@ export class A2aMeshService extends Service {
    * @param meta - display name, description, and creating cwd.
    * @returns the created project.
    */
-  async createProject(name: string, meta: { displayName?: string; description?: string; createdByCwd?: string } = {}): Promise<A2aProject> {
+  async createProject(name: string, meta: { displayName?: string; description?: string; createdByCwd?: string } = {}): Promise<S2sProject> {
     const project = await (await this.hubClient()).createProject(name, meta)
-    this.ctx.emit('a2a/change', { scope: 'all' })
+    this.ctx.emit('s2s/change', { scope: 'all' })
     return project
   }
 
@@ -432,7 +432,7 @@ export class A2aMeshService extends Service {
    * List hub projects.
    * @returns projects sorted by name.
    */
-  async listProjects(): Promise<A2aProject[]> {
+  async listProjects(): Promise<S2sProject[]> {
     return (await this.hubClient()).listProjects()
   }
 
@@ -475,7 +475,7 @@ export class A2aMeshService extends Service {
     // its remaining surface so the lifecycle listener never rejects.
     /* v8 ignore next 4 -- defensive: see above, the listener never rejects */
     void this.disconnect(agentId).catch((error: unknown) => {
-      this.ctx.logger.warn(`a2a mesh: failed to disconnect disposed member "${agentId}": ${String(error)}`)
+      this.ctx.logger.warn(`s2s mesh: failed to disconnect disposed member "${agentId}": ${String(error)}`)
     })
   }
 
@@ -489,7 +489,7 @@ export class A2aMeshService extends Service {
     if (this.config.autoConnect === false) return
     if (this.memberships.has(agentId)) return
     const fail = (error: unknown): void => {
-      this.ctx.logger.warn(`a2a mesh: auto-connect failed for "${agentId}": ${String(error)}`)
+      this.ctx.logger.warn(`s2s mesh: auto-connect failed for "${agentId}": ${String(error)}`)
     }
     if (agentId === this.config.agentId) {
       void this.connect(agentId).catch(fail)
@@ -525,38 +525,38 @@ export class A2aMeshService extends Service {
   /** Open one membership's connection and wire its events. */
   private async openConnection(membership: Membership): Promise<void> {
     const client = await this.hubClient()
-    let connection: A2aConnection
+    let connection: S2sConnection
     try {
-      connection = await A2aConnection.connect({
+      connection = await S2sConnection.connect({
         baseUrl: client.url,
         project: membership.project,
         name: membership.name,
         events: {
           onPresenceJoined: (peer) => {
-            this.ctx.emit('a2a/change', { scope: 'session', agentId: membership.agentId })
-            this.ctx.logger.info(`a2a mesh: peer joined ${membership.project}/${peer.name}`)
+            this.ctx.emit('s2s/change', { scope: 'session', agentId: membership.agentId })
+            this.ctx.logger.info(`s2s mesh: peer joined ${membership.project}/${peer.name}`)
           },
           onPresenceLeft: (peer, reason) => {
-            this.ctx.emit('a2a/change', { scope: 'session', agentId: membership.agentId })
-            this.ctx.logger.info(`a2a mesh: peer left ${membership.project}/${peer.name} (${reason})`)
+            this.ctx.emit('s2s/change', { scope: 'session', agentId: membership.agentId })
+            this.ctx.logger.info(`s2s mesh: peer left ${membership.project}/${peer.name} (${reason})`)
           },
           onMessage: async (raw) => {
             await this.deliverMessage(membership, raw)
           },
           onDelivery: (delivery) => {
             membership.activity.noteDelivery(delivery.to, delivery.status === 'delivered')
-            this.ctx.emit('a2a/delivery', delivery)
-            this.ctx.logger.info(`a2a mesh: delivery ${delivery.status} to ${delivery.to} (${delivery.messageId})`)
+            this.ctx.emit('s2s/delivery', delivery)
+            this.ctx.logger.info(`s2s mesh: delivery ${delivery.status} to ${delivery.to} (${delivery.messageId})`)
           },
           onError: (error) => {
-            this.ctx.logger.warn(`a2a mesh: realtime error: ${error.message}`)
+            this.ctx.logger.warn(`s2s mesh: realtime error: ${error.message}`)
           },
           onClose: ({ manual }) => {
             if (this.memberships.get(membership.agentId) !== membership) return
             membership.connection = undefined
-            this.ctx.emit('a2a/change', { scope: 'session', agentId: membership.agentId })
+            this.ctx.emit('s2s/change', { scope: 'session', agentId: membership.agentId })
             if (manual || !membership.desired) return
-            this.ctx.logger.warn(`a2a mesh: connection lost for "${membership.name}"; reconnecting`)
+            this.ctx.logger.warn(`s2s mesh: connection lost for "${membership.name}"; reconnecting`)
             this.scheduleReconnect(membership)
           },
         },
@@ -564,8 +564,8 @@ export class A2aMeshService extends Service {
     } catch (error) {
       if (
         this.memberships.get(membership.agentId) === membership
-        && error instanceof A2aError
-        && ['A2A_NAME_IN_USE', 'A2A_UNKNOWN_PROJECT', 'A2A_PROTOCOL_MISMATCH'].includes(error.code)
+        && error instanceof S2sError
+        && ['S2S_NAME_IN_USE', 'S2S_UNKNOWN_PROJECT', 'S2S_PROTOCOL_MISMATCH'].includes(error.code)
       ) {
         membership.desired = false
       }
@@ -576,10 +576,10 @@ export class A2aMeshService extends Service {
       return
     }
     membership.connection = connection
-    this.ctx.emit('a2a/change', { scope: 'session', agentId: membership.agentId })
+    this.ctx.emit('s2s/change', { scope: 'session', agentId: membership.agentId })
     membership.reconnectDelayMs = this.config.reconnectMs ?? 500
     const self = connection.self
-    this.ctx.emit('a2a/presence-changed', {
+    this.ctx.emit('s2s/presence-changed', {
       project: membership.project,
       agentId: membership.agentId,
       name: self.name,
@@ -589,12 +589,12 @@ export class A2aMeshService extends Service {
   }
 
   /** Deliver one inbound message: materialize, then inject into the owner. */
-  private async deliverMessage(membership: Membership, raw: A2aRealtimeMessage): Promise<void> {
+  private async deliverMessage(membership: Membership, raw: S2sRealtimeMessage): Promise<void> {
     const view = this.decodeMessage(raw)
     const references = await materializeAttachments(view.project, view.messageRef, view.attachments)
     const agent = this.owningAgent(membership.agentId)
     if (agent === undefined) {
-      throw new Error(`a2a mesh: no live agent for presence "${membership.name}"`)
+      throw new Error(`s2s mesh: no live agent for presence "${membership.name}"`)
     }
     this.injectMessage(agent, view, references)
     membership.activity.noteReceived(raw.from.name)
@@ -607,7 +607,7 @@ export class A2aMeshService extends Service {
       membership.reconnectTimer = undefined
       if (!membership.desired || this.memberships.get(membership.agentId) !== membership) return
       void this.openConnection(membership).catch((error: unknown) => {
-        this.ctx.logger.warn(`a2a mesh: reconnect failed for "${membership.name}": ${String(error)}`)
+        this.ctx.logger.warn(`s2s mesh: reconnect failed for "${membership.name}": ${String(error)}`)
       })
     }, membership.reconnectDelayMs)
     membership.reconnectDelayMs = Math.min(membership.reconnectDelayMs * 2, 10_000)
@@ -629,7 +629,7 @@ export class A2aMeshService extends Service {
   }
 
   /** Decode one wire message into its view (text and attachment bytes). */
-  private decodeMessage(message: A2aRealtimeMessage): A2aMessageView {
+  private decodeMessage(message: S2sRealtimeMessage): S2sMessageView {
     const { payload, attachments, ...metadata } = message
     return {
       ...metadata,
@@ -642,16 +642,16 @@ export class A2aMeshService extends Service {
   }
 
   /** Inject one decoded message into its owning agent, idle-aware. */
-  private injectMessage(agent: Agent, message: A2aMessageView, attachments: A2aAttachmentReference[]): void {
+  private injectMessage(agent: Agent, message: S2sMessageView, attachments: S2sAttachmentReference[]): void {
     const attachmentText = attachments.length === 0
       ? ''
       : `\nAttachments:\n${attachments
         .map(attachment => `- ${attachment.name} (${attachment.uncompressedBytes} bytes): ${attachment.path}`)
         .join('\n')}`
-    const text = `[a2a message] ref=${message.messageRef} from=${message.from.name} project=${message.project} at=${new Date(message.createdAt).toISOString()} replyTo=${message.replyTo ?? '-'}\n${message.text}${attachmentText}`
+    const text = `[s2s message] ref=${message.messageRef} from=${message.from.name} project=${message.project} at=${new Date(message.createdAt).toISOString()} replyTo=${message.replyTo ?? '-'}\n${message.text}${attachmentText}`
     const userMessage = createUserMessage({
       content: [{ type: 'text', text }],
-      source: { kind: 'a2a', msgId: message.messageId, messageRef: message.messageRef },
+      source: { kind: 's2s', msgId: message.messageId, messageRef: message.messageRef },
     })
     if (agent.status === 'idle') {
       // A follow-up turn wakes the driver and processes the message now.
@@ -671,7 +671,7 @@ export class A2aMeshService extends Service {
   private resolveAgentId(fallback: string | undefined): string {
     const agentId = fallback ?? this.config.agentId
     if (agentId === undefined) {
-      throw new A2aError('mesh connect needs an agentId (the owning session agent id)', 'A2A_CLIENT_CONNECT')
+      throw new S2sError('mesh connect needs an agentId (the owning session agent id)', 'S2S_CLIENT_CONNECT')
     }
     return agentId
   }
@@ -694,17 +694,17 @@ export class A2aMeshService extends Service {
     const resolved = this.resolveOptionalAgentId(fallback)
     const membership = resolved === undefined ? undefined : this.memberships.get(resolved)
     if (membership === undefined) {
-      throw new A2aError('not connected: run /a2a connect <project> --as <name> first', 'A2A_CLIENT_CONNECT')
+      throw new S2sError('not connected: run /s2s connect <project> --as <name> first', 'S2S_CLIENT_CONNECT')
     }
     return membership
   }
 
   /** Resolve the connection of an agent that must be connected. */
-  private resolveConnection(fallback: string | undefined): A2aConnection {
+  private resolveConnection(fallback: string | undefined): S2sConnection {
     const membership = this.resolveMembership(fallback)
     const connection = membership.connection
     if (connection === undefined) {
-      throw new A2aError('not connected: run /a2a connect <project> --as <name> first', 'A2A_CLIENT_CONNECT')
+      throw new S2sError('not connected: run /s2s connect <project> --as <name> first', 'S2S_CLIENT_CONNECT')
     }
     return connection
   }

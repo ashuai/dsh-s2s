@@ -1,7 +1,7 @@
 /**
- * The model-facing a2a tool family (0.3 realtime chat): `a2a_peers` lists
- * the current roster, `a2a_message` sends to one peer or broadcasts to the
- * project, and `a2a_history` reviews earlier project messages. Replies are
+ * The model-facing s2s tool family (0.3 realtime chat): `s2s_peers` lists
+ * the current roster, `s2s_message` sends to one peer or broadcasts to the
+ * project, and `s2s_history` reviews earlier project messages. Replies are
  * delivered passively — the tools never wait or poll.
  * @module @dpskh/a2a/tools
  */
@@ -10,11 +10,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import type { A2aMeshService } from './mesh.ts'
+import type { S2sMeshService } from './mesh.ts'
 import { ASYNC_REPLY_GUIDANCE } from './mesh.ts'
-import type { A2aAttachmentReference } from './attachments.ts'
+import type { S2sAttachmentReference } from './attachments.ts'
 import { materializeAttachments } from './attachments.ts'
-import type { A2aMessageView } from './mesh.ts'
+import type { S2sMessageView } from './mesh.ts'
 
 /** Render one tool result as plain text. */
 function textRender(_args: object, value: { text: string }): ContentBlock[] {
@@ -22,7 +22,7 @@ function textRender(_args: object, value: { text: string }): ContentBlock[] {
 }
 
 /** Format one message's attachments as model-visible lines. */
-function formatAttachments(attachments: readonly A2aAttachmentReference[]): string {
+function formatAttachments(attachments: readonly S2sAttachmentReference[]): string {
   if (attachments.length === 0) return ''
   return `\nAttachments:\n${attachments
     .map(attachment => `- ${attachment.name} (${attachment.uncompressedBytes} bytes): ${attachment.path}`)
@@ -30,7 +30,7 @@ function formatAttachments(attachments: readonly A2aAttachmentReference[]): stri
 }
 
 /** Format one history message like the injected inbound shape. */
-function formatMessage(message: A2aMessageView, attachments: readonly A2aAttachmentReference[]): string {
+function formatMessage(message: S2sMessageView, attachments: readonly S2sAttachmentReference[]): string {
   const target = message.target.type === 'project' ? 'project' : message.target.name
   return `[${message.messageRef}] ${message.from.name} -> ${target}${message.replyTo ? ` replyTo=${message.replyTo}` : ''}\n${message.text}${formatAttachments(attachments)}`
 }
@@ -40,11 +40,11 @@ function formatMessage(message: A2aMessageView, attachments: readonly A2aAttachm
  * @param mesh - the mesh client service.
  * @returns the tool definitions.
  */
-export function buildTools(mesh: A2aMeshService): ToolDefinition[] {
+export function buildTools(mesh: S2sMeshService): ToolDefinition[] {
   return [
     defineTool({
-      name: 'a2a_peers',
-      description: 'List the exact A2A roster names currently present in this Project. Use only a returned name for target.type=agent.',
+      name: 's2s_peers',
+      description: 'List the exact S2S roster names currently present in this Project. Use only a returned name for target.type=agent.',
       parameters: {},
       output: {
         schema: {
@@ -67,8 +67,8 @@ export function buildTools(mesh: A2aMeshService): ToolDefinition[] {
       },
     }),
     defineTool({
-      name: 'a2a_message',
-      description: 'Send to one current peer or all current peers. Use target.type=agent with a name from a2a_peers, or target.type=project for all current peers. Set replyTo to reply to an earlier Project message. Attachments must be current-session file paths (absolute). '
+      name: 's2s_message',
+      description: 'Send to one current peer or all current peers. Use target.type=agent with a name from s2s_peers, or target.type=project for all current peers. Set replyTo to reply to an earlier Project message. Attachments must be current-session file paths (absolute). '
         + ASYNC_REPLY_GUIDANCE,
       parameters: {
         target: {
@@ -78,7 +78,7 @@ export function buildTools(mesh: A2aMeshService): ToolDefinition[] {
           additionalProperties: false,
           properties: {
             type: { type: 'string', enum: ['agent', 'project'], required: true },
-            name: { type: 'string', description: 'Peer roster name, from a2a_peers (required when type=agent).' },
+            name: { type: 'string', description: 'Peer roster name, from s2s_peers (required when type=agent).' },
           },
         },
         text: { type: 'string', required: true, description: 'The message text.' },
@@ -122,7 +122,7 @@ export function buildTools(mesh: A2aMeshService): ToolDefinition[] {
       },
     }),
     defineTool({
-      name: 'a2a_history',
+      name: 's2s_history',
       description: 'Review earlier Project messages using before, after, limit, or from. Returned attachment links are valid in the current session. Use only for past context; never wait or poll for new replies.',
       parameters: {
         before: { type: 'string', description: 'Only messages before this Project reference (exclusive).' },
@@ -160,22 +160,22 @@ export function buildTools(mesh: A2aMeshService): ToolDefinition[] {
 }
 
 /** Cordis plugin name of the tool family. */
-export const name = 'a2a-tools'
+export const name = 's2s-tools'
 
 /** The mesh service and tool registry must be present before activation. */
-export const inject = ['a2aMesh', 'tools']
+export const inject = ['s2sMesh', 'tools']
 
 /**
- * Register the a2a tool family on `ctx.tools`. Cordis activates this plugin
+ * Register the s2s tool family on `ctx.tools`. Cordis activates this plugin
  * only after both the mesh service and the tool registry exist, so the
  * registration is timing-free.
  * @param ctx - Cordis context carrying the tool registry and mesh service.
  */
 export function apply(ctx: Context): void {
   const tools = ctx.get('tools') as { register(definition: ToolDefinition): () => void }
-  const mesh = ctx.get('a2aMesh') as A2aMeshService
+  const mesh = ctx.get('s2sMesh') as S2sMeshService
   const disposers = buildTools(mesh).map(definition => tools.register(definition))
   ctx.effect(() => () => {
     for (const dispose of disposers) dispose()
-  }, 'a2a-tools.disposers')
+  }, 's2s-tools.disposers')
 }

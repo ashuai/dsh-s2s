@@ -1,5 +1,5 @@
 /**
- * Durable a2a hub domain (protocol version 3): project metadata, per-project
+ * Durable s2s hub domain (protocol version 3): project metadata, per-project
  * sequence counters, the immutable message history, and the msgId
  * idempotency index. Presence, delivery, and roster state are in-memory
  * only — messages are the sole durable record. One domain over the routed
@@ -16,7 +16,7 @@ import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 export const KEY_SEP = '/'
 
 /** One stored project. */
-export const a2aProjectRecord = z.object({
+export const s2sProjectRecord = z.object({
   displayName: z.string().optional(),
   description: z.string().optional(),
   createdByCwd: z.string().optional(),
@@ -24,12 +24,12 @@ export const a2aProjectRecord = z.object({
 })
 
 /** One per-project sequence counter (seeded at project creation). */
-export const a2aSequenceRecord = z.object({
+export const s2sSequenceRecord = z.object({
   next: z.number(),
 })
 
 /** One stored attachment: a name plus its encoded content bytes. */
-export const a2aAttachmentRecord = z.object({
+export const s2sAttachmentRecord = z.object({
   name: z.string(),
   payload: z.object({
     encoding: z.enum(['base64', 'gzip+base64']),
@@ -43,7 +43,7 @@ export const a2aAttachmentRecord = z.object({
  * key is `project/sequence`. `contentBytes` is the decoded text plus
  * attachment byte total, verified at read.
  */
-export const a2aMessageRecord = z.object({
+export const s2sMessageRecord = z.object({
   msgId: z.string(),
   senderName: z.string(),
   senderPresenceId: z.string(),
@@ -58,27 +58,27 @@ export const a2aMessageRecord = z.object({
   encoding: z.enum(['identity', 'gzip+base64']),
   data: z.string(),
   uncompressedBytes: z.number(),
-  attachments: z.array(a2aAttachmentRecord).default([]),
+  attachments: z.array(s2sAttachmentRecord).default([]),
   contentBytes: z.number(),
   createdAt: z.number(),
   replyToSequence: z.number().optional(),
 })
 
 /** One msgId → (project, sequence) idempotency index row. */
-export const a2aMessageIdRecord = z.object({
+export const s2sMessageIdRecord = z.object({
   project: z.string(),
   sequence: z.number(),
 })
 
 /** Durable hub state, one domain over the routed backend. */
-export const a2aHubDomainSpec = defineDomain({
-  name: 'a2a',
+export const s2sHubDomainSpec = defineDomain({
+  name: 's2s',
   version: 3,
   tables: {
-    projects: domainTable<string, z.infer<typeof a2aProjectRecord>>(a2aProjectRecord),
-    sequences: domainTable<string, z.infer<typeof a2aSequenceRecord>>(a2aSequenceRecord),
-    messages: domainTable<string, z.infer<typeof a2aMessageRecord>>(a2aMessageRecord),
-    message_ids: domainTable<string, z.infer<typeof a2aMessageIdRecord>>(a2aMessageIdRecord),
+    projects: domainTable<string, z.infer<typeof s2sProjectRecord>>(s2sProjectRecord),
+    sequences: domainTable<string, z.infer<typeof s2sSequenceRecord>>(s2sSequenceRecord),
+    messages: domainTable<string, z.infer<typeof s2sMessageRecord>>(s2sMessageRecord),
+    message_ids: domainTable<string, z.infer<typeof s2sMessageIdRecord>>(s2sMessageIdRecord),
   },
 })
 

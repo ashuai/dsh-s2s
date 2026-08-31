@@ -5,26 +5,26 @@
  * @module @dpskh/a2a/hub/realtime-types
  */
 
-import type { A2aMessageRequestTarget, A2aPeer, A2aRealtimeMessage } from './types.ts'
+import type { S2sMessageRequestTarget, S2sPeer, S2sRealtimeMessage } from './types.ts'
 import type { EncodedAttachment, EncodedTextPayload } from './payload.ts'
 
 /** The mesh protocol version this seam implements. */
-export const A2A_PROTOCOL_VERSION = 3
+export const S2S_PROTOCOL_VERSION = 3
 
 /** One accepted send: the stored message plus the recipients at accept time. */
-export type A2aAcceptedMessage = {
-  readonly message: A2aRealtimeMessage
+export type S2sAcceptedMessage = {
+  readonly message: S2sRealtimeMessage
   readonly recipients: readonly string[]
 }
 
 /** Client→Hub frames. */
-export type A2aClientFrame =
+export type S2sClientFrame =
   | { type: 'hello'; protocolVersion: number; project: string; name: string }
   | {
     type: 'message'
     requestId: string
     messageId: string
-    target: A2aMessageRequestTarget
+    target: S2sMessageRequestTarget
     payload: EncodedTextPayload
     attachments: EncodedAttachment[]
     replyTo?: string
@@ -33,22 +33,22 @@ export type A2aClientFrame =
   | { type: 'delivery_failed'; messageId: string; error: string }
 
 /** Hub→Client frames. */
-export type A2aServerFrame =
+export type S2sServerFrame =
   | {
     type: 'claimed'
-    protocolVersion: typeof A2A_PROTOCOL_VERSION
+    protocolVersion: typeof S2S_PROTOCOL_VERSION
     project: string
-    self: A2aPeer
-    peers: A2aPeer[]
+    self: S2sPeer
+    peers: S2sPeer[]
   }
-  | { type: 'presence_joined'; peer: A2aPeer }
+  | { type: 'presence_joined'; peer: S2sPeer }
   | {
     type: 'presence_left'
-    peer: A2aPeer
+    peer: S2sPeer
     reason: 'connection_closed' | 'heartbeat_timeout' | 'hub_shutdown'
   }
-  | { type: 'accepted'; requestId: string; message: A2aRealtimeMessage; recipients: string[] }
-  | { type: 'message'; message: A2aRealtimeMessage }
+  | { type: 'accepted'; requestId: string; message: S2sRealtimeMessage; recipients: string[] }
+  | { type: 'message'; message: S2sRealtimeMessage }
   | ({ type: 'delivery' } & (
     | { messageId: string; to: string; status: 'delivered' | 'disconnected' }
     | { messageId: string; to: string; status: 'failed'; error: string }

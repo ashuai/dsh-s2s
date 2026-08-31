@@ -8,22 +8,22 @@
 
 import type { WebSocket } from 'ws'
 import { AGENT_NAME_RE, PROJECT_NAME_RE } from './message-ref.ts'
-import type { A2aPeer } from './types.ts'
+import type { S2sPeer } from './types.ts'
 
 /** The claimed name is already taken by a live connection in the project. */
 export class NameInUseError extends Error {}
 
 /** One claimed connection. */
-export type A2aPresence = A2aPeer & {
+export type S2sPresence = S2sPeer & {
   readonly project: string
   readonly socket: WebSocket
   readonly connectedAt: number
 }
 
 /** Registry of live presences, keyed by project and by socket. */
-export class A2aPresenceRegistry {
-  private readonly byProject = new Map<string, Map<string, A2aPresence>>()
-  private readonly bySocket = new Map<WebSocket, A2aPresence>()
+export class S2sPresenceRegistry {
+  private readonly byProject = new Map<string, Map<string, S2sPresence>>()
+  private readonly bySocket = new Map<WebSocket, S2sPresence>()
 
   /**
    * Claim one name in a project for a socket.
@@ -33,7 +33,7 @@ export class A2aPresenceRegistry {
    * @returns the claimed presence plus the peers present before the claim.
    * @throws {NameInUseError} when the name is already live in the project.
    */
-  claim(project: string, name: string, socket: WebSocket): { self: A2aPresence; peers: A2aPeer[] } {
+  claim(project: string, name: string, socket: WebSocket): { self: S2sPresence; peers: S2sPeer[] } {
     if (!PROJECT_NAME_RE.test(project)) throw new Error(`invalid project: ${project}`)
     if (!AGENT_NAME_RE.test(name)) throw new Error(`invalid name: ${name}`)
     if (this.bySocket.has(socket)) throw new Error('connection already claimed a name')
@@ -44,7 +44,7 @@ export class A2aPresenceRegistry {
     }
     if (room.has(name)) throw new NameInUseError(`name already in use in ${project}: ${name}`)
     const peers = Array.from(room.values(), ({ name: peerName, presenceId }) => ({ name: peerName, presenceId }))
-    const self: A2aPresence = {
+    const self: S2sPresence = {
       project,
       name,
       presenceId: crypto.randomUUID(),
@@ -62,7 +62,7 @@ export class A2aPresenceRegistry {
    * @param name - roster name.
    * @returns the presence, or `null` when not live.
    */
-  get(project: string, name: string): A2aPresence | null {
+  get(project: string, name: string): S2sPresence | null {
     return this.byProject.get(project)?.get(name) ?? null
   }
 
@@ -71,7 +71,7 @@ export class A2aPresenceRegistry {
    * @param socket - the WebSocket.
    * @returns the presence, or `null` when unclaimed.
    */
-  getBySocket(socket: WebSocket): A2aPresence | null {
+  getBySocket(socket: WebSocket): S2sPresence | null {
     return this.bySocket.get(socket) ?? null
   }
 
@@ -80,7 +80,7 @@ export class A2aPresenceRegistry {
    * @param project - project name.
    * @returns the live presences.
    */
-  connections(project: string): A2aPresence[] {
+  connections(project: string): S2sPresence[] {
     return Array.from(this.byProject.get(project)?.values() ?? [])
   }
 
@@ -89,7 +89,7 @@ export class A2aPresenceRegistry {
    * @param socket - the closing socket.
    * @returns the removed presence, or `null` when the socket had none.
    */
-  remove(socket: WebSocket): A2aPresence | null {
+  remove(socket: WebSocket): S2sPresence | null {
     const presence = this.bySocket.get(socket)
     if (!presence) return null
     this.bySocket.delete(socket)
@@ -112,7 +112,7 @@ export class A2aPresenceRegistry {
    * Drain every presence (hub shutdown).
    * @returns the presences to fail deliveries for and close.
    */
-  close(): A2aPresence[] {
+  close(): S2sPresence[] {
     const presences = Array.from(this.bySocket.values())
     this.bySocket.clear()
     this.byProject.clear()

@@ -1,44 +1,19 @@
-# dsh-a2a repository
+# dsh-s2s repository
 
-This repository owns the standalone DeepSeek Harness A2A packages. Build artifacts are not tracked; `lib/` and `node_modules/` remain ignored.
+**dsh-s2s is a trimmed fork of [`@dpskh/a2a`](https://github.com/dpskh/dsh-a2a) (MIT)** — same-host session-to-session interconnection for the DeepSeek Harness, with session-lifecycle support on the roadmap. Build artifacts are not tracked; `lib/` and `node_modules/` remain ignored.
 
-## Packages
+## Package
 
 | Package | Location | Role |
 |---|---|---|
-| [`@dpskh/a2a`](README.md) | repository root | Realtime A2A mesh, Hub transport and storage, model tools, and the `/a2a` command surface. |
-| [`@dpskh/ui-a2a`](ui-a2a/README.md) | `ui-a2a/` | Host RPC projection and browser collaboration console for the A2A mesh. |
+| `dsh-s2s` | repository root | Same-host S2S mesh (hub transport and storage, serial injection), model tools, and the session-lifecycle modules (mailbox / resume / budget) added by this fork. |
 
-The core package can be installed directly from Git:
-
-```json
-{
-  "dependencies": {
-    "@dpskh/a2a": "github:dpskh/dsh-a2a#main"
-  }
-}
-```
-
-Git dependencies cannot address the nested browser package. Clone this repository and install it by path until it is published:
-
-```json
-{
-  "dependencies": {
-    "@dpskh/a2a": "github:dpskh/dsh-a2a#main",
-    "@dpskh/ui-a2a": "file:../dsh-a2a/ui-a2a"
-  }
-}
-```
-
-Both packages consume Harness services through peer dependencies. The application owns those services and the Cordis composition.
+All connection-management, protocol, and injection core code is inherited from the upstream `@dpskh/a2a` snapshot (see `vendor-base` tag); the trimmed fork removes the browser package, the command surface, and the browser test stubs.
 
 ## Development
 
 ```sh
 pnpm install
-pnpm run typecheck:all
+pnpm run typecheck
 pnpm run test
-pnpm run build:all
 ```
-
-The root workspace links `@dpskh/ui-a2a` to the local `@dpskh/a2a` package. Tests cover the core and browser packages from the same checkout.

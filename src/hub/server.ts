@@ -10,11 +10,11 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { A2aError } from '../error.ts'
-import { A2aHubMessages } from './messages.ts'
-import { A2aRealtimeHub } from './realtime-server.ts'
-import { A2A_PROTOCOL_VERSION } from './realtime-types.ts'
-import { ProjectConflictError, type A2aHubRegistry } from './registry.ts'
+import { S2sError } from '../error.ts'
+import { S2sHubMessages } from './messages.ts'
+import { S2sRealtimeHub } from './realtime-server.ts'
+import { S2S_PROTOCOL_VERSION } from './realtime-types.ts'
+import { ProjectConflictError, type S2sHubRegistry } from './registry.ts'
 
 /** Name validation: printable ASCII, no `/` (composite keys depend on it). */
 export const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/
@@ -29,7 +29,7 @@ type RouteResult = { result: unknown } | { error: { code: string; message: strin
 type RouteTable = Record<string, (params: Record<string, unknown>) => Promise<RouteResult>>
 
 /** Constructor options for the mesh hub server. */
-export interface A2aHubServerOptions {
+export interface S2sHubServerOptions {
   /** Bind host; defaults to `127.0.0.1`. */
   readonly host?: string
   /** Bind port; `0` asks the OS for an ephemeral port. */
@@ -37,9 +37,9 @@ export interface A2aHubServerOptions {
   /** Inclusive upper port bound; `EADDRINUSE` walks up to it before failing. */
   readonly maxPort?: number
   /** The project registry. */
-  readonly registry: A2aHubRegistry
+  readonly registry: S2sHubRegistry
   /** The message store. */
-  readonly messages: A2aHubMessages
+  readonly messages: S2sHubMessages
 }
 
 type Params = Record<string, unknown>
@@ -47,7 +47,7 @@ type Params = Record<string, unknown>
 function paramString(params: Params, name: string): string {
   const value = params[name]
   if (typeof value !== 'string' || value.length === 0) {
-    throw new A2aError(`missing or invalid parameter: ${name}`, 'A2A_BAD_REQUEST')
+    throw new S2sError(`missing or invalid parameter: ${name}`, 'S2S_BAD_REQUEST')
   }
   return value
 }
@@ -55,14 +55,14 @@ function paramString(params: Params, name: string): string {
 function paramOptionalString(params: Params, name: string): string | undefined {
   const value = params[name]
   if (value === undefined) return undefined
-  if (typeof value !== 'string') throw new A2aError(`invalid parameter: ${name}`, 'A2A_BAD_REQUEST')
+  if (typeof value !== 'string') throw new S2sError(`invalid parameter: ${name}`, 'S2S_BAD_REQUEST')
   return value
 }
 
 /** Validate a name against the mesh name rule. */
 function assertName(name: string): string {
   if (!NAME_RE.test(name)) {
-    throw new A2aError(`invalid name (must match ${NAME_RE}): ${name}`, 'A2A_BAD_REQUEST')
+    throw new S2sError(`invalid name (must match ${NAME_RE}): ${name}`, 'S2S_BAD_REQUEST')
   }
   return name
 }
@@ -73,15 +73,15 @@ function assertName(name: string): string {
  * WebSocket upgrade (realtime hub) over one HTTP server; the caller owns
  * the registry and message-store lifetimes.
  */
-export class A2aHubServer {
+export class S2sHubServer {
   private readonly host: string
   private readonly bindPort: number
   private readonly maxPort: number
-  private readonly registry: A2aHubRegistry
-  private readonly messages: A2aHubMessages
+  private readonly registry: S2sHubRegistry
+  private readonly messages: S2sHubMessages
   private readonly routes: RouteTable
   private server: Server | undefined
-  private realtime: A2aRealtimeHub | undefined
+  private realtime: S2sRealtimeHub | undefined
   private actualPort = 0
   private baseUrl = ''
 
@@ -89,12 +89,12 @@ export class A2aHubServer {
    * @param options - bind address (with an optional port range to walk up on
    * `EADDRINUSE`) plus the registry and message store backing the routes.
    */
-  constructor(options: A2aHubServerOptions) {
+  constructor(options: S2sHubServerOptions) {
     this.host = options.host ?? '127.0.0.1'
     this.bindPort = options.port
     this.maxPort = options.maxPort ?? options.port
     if (this.maxPort < this.bindPort) {
-      throw new A2aError(`invalid hub port range: maxPort ${this.maxPort} is below port ${this.bindPort}`, 'A2A_BAD_REQUEST')
+      throw new S2sError(`invalid hub port range: maxPort ${this.maxPort} is below port ${this.bindPort}`, 'S2S_BAD_REQUEST')
     }
     this.registry = options.registry
     this.messages = options.messages
@@ -156,7 +156,7 @@ export class A2aHubServer {
         this.server = server
         this.actualPort = address.port
         this.baseUrl = `http://${this.host}:${address.port}`
-        this.realtime = new A2aRealtimeHub(server, this.messages, name => this.registry.getProject(name))
+        this.realtime = new S2sRealtimeHub(server, this.messages, name => this.registry.getProject(name))
         resolve(address.port)
       })
     })
@@ -217,7 +217,7 @@ export class A2aHubServer {
           port: this.actualPort,
           baseUrl: this.baseUrl,
           startedAt: this.startedAt,
-          protocolVersion: A2A_PROTOCOL_VERSION,
+          protocolVersion: S2S_PROTOCOL_VERSION,
         })
         return
       }
@@ -245,11 +245,11 @@ export class A2aHubServer {
         mapped = { code: 'bad-json', message: 'request body is not valid JSON' }
       } else if (error instanceof ProjectConflictError) {
         mapped = { code: 'project-conflict', message: error.message }
-      } else if (error instanceof A2aError) {
+      } else if (error instanceof S2sError) {
         mapped = { code: error.code, message: error.message }
       } else {
         // Only a programming error in a route reaches here; everything
-        // caller-shaped folds into A2aError above.
+        // caller-shaped folds into S2sError above.
         mapped = { code: 'internal', message: error instanceof Error ? error.message : String(error) }
       }
       this.json(response, 200, { error: mapped })
@@ -296,7 +296,7 @@ export class A2aHubServer {
         size += chunk.byteLength
         if (size > MAX_BODY_BYTES) {
           settled = true
-          reject(new A2aError('request body too large', 'A2A_BAD_REQUEST'))
+          reject(new S2sError('request body too large', 'S2S_BAD_REQUEST'))
           request.destroy()
           return
         }
@@ -314,7 +314,7 @@ export class A2aHubServer {
       request.on('error', () => {
         if (settled) return
         settled = true
-        reject(new A2aError('request body was interrupted', 'A2A_BAD_REQUEST'))
+        reject(new S2sError('request body was interrupted', 'S2S_BAD_REQUEST'))
       })
     })
   }

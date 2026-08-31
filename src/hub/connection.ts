@@ -8,19 +8,19 @@
  */
 
 import WebSocket, { type RawData } from 'ws'
-import { A2aError, type A2aErrorCode } from '../error.ts'
+import { S2sError, type S2sErrorCode } from '../error.ts'
 import { encodeTextPayload } from './payload.ts'
 import {
-  A2A_PROTOCOL_VERSION,
-  type A2aAcceptedMessage,
-  type A2aClientFrame,
-  type A2aServerFrame,
+  S2S_PROTOCOL_VERSION,
+  type S2sAcceptedMessage,
+  type S2sClientFrame,
+  type S2sServerFrame,
 } from './realtime-types.ts'
 import type {
-  A2aDeliveryEvent,
-  A2aMessageRequestTarget,
-  A2aPeer,
-  A2aRealtimeMessage,
+  S2sDeliveryEvent,
+  S2sMessageRequestTarget,
+  S2sPeer,
+  S2sRealtimeMessage,
 } from './types.ts'
 import type { EncodedAttachment } from './payload.ts'
 
@@ -42,42 +42,42 @@ function deliveryFailureMessage(error: unknown): string {
 }
 
 /** Map a realtime error frame onto the seam's stable error vocabulary. */
-function connectionError(code: string, message: string): A2aError {
-  const mapped: A2aErrorCode = code === 'protocol_mismatch'
-    ? 'A2A_PROTOCOL_MISMATCH'
+function connectionError(code: string, message: string): S2sError {
+  const mapped: S2sErrorCode = code === 'protocol_mismatch'
+    ? 'S2S_PROTOCOL_MISMATCH'
     : code === 'name_in_use'
-      ? 'A2A_NAME_IN_USE'
+      ? 'S2S_NAME_IN_USE'
       : code === 'unknown_project'
-        ? 'A2A_UNKNOWN_PROJECT'
-        : 'A2A_CLAIM_REJECTED'
-  return new A2aError(message, mapped)
+        ? 'S2S_UNKNOWN_PROJECT'
+        : 'S2S_CLAIM_REJECTED'
+  return new S2sError(message, mapped)
 }
 
 /** Connection event callbacks. */
-export interface A2aConnectionEvents {
-  onPresenceJoined?: (peer: A2aPeer) => void
-  onPresenceLeft?: (peer: A2aPeer, reason: Extract<A2aServerFrame, { type: 'presence_left' }>['reason']) => void
-  onMessage?: (message: A2aRealtimeMessage) => void | Promise<void>
-  onDelivery?: (delivery: A2aDeliveryEvent) => void
+export interface S2sConnectionEvents {
+  onPresenceJoined?: (peer: S2sPeer) => void
+  onPresenceLeft?: (peer: S2sPeer, reason: Extract<S2sServerFrame, { type: 'presence_left' }>['reason']) => void
+  onMessage?: (message: S2sRealtimeMessage) => void | Promise<void>
+  onDelivery?: (delivery: S2sDeliveryEvent) => void
   onClose?: (event: { manual: boolean; code: number; reason: string }) => void
   onError?: (error: Error) => void
 }
 
 /** One in-flight send awaiting its `accepted` (or `error`) frame. */
 type PendingRequest = {
-  resolve: (result: A2aAcceptedMessage) => void
+  resolve: (result: S2sAcceptedMessage) => void
   reject: (error: Error) => void
 }
 
 /** The realtime client connection. */
-export class A2aConnection {
+export class S2sConnection {
   private readonly socket: WebSocket
   private readonly projectName: string
   private readonly rosterName: string
-  private selfPeer: A2aPeer | null = null
-  private peerMap = new Map<string, A2aPeer>()
+  private selfPeer: S2sPeer | null = null
+  private peerMap = new Map<string, S2sPeer>()
   private readonly pending = new Map<string, PendingRequest>()
-  private readonly events: A2aConnectionEvents
+  private readonly events: S2sConnectionEvents
   private readonly ready: Promise<void>
   private resolveReady!: () => void
   private rejectReady!: (error: Error) => void
@@ -86,7 +86,7 @@ export class A2aConnection {
   private manualClose = false
   private messageQueue: Promise<void> = Promise.resolve()
 
-  private constructor(baseUrl: string, project: string, name: string, events: A2aConnectionEvents) {
+  private constructor(baseUrl: string, project: string, name: string, events: S2sConnectionEvents) {
     this.projectName = project
     this.rosterName = name
     this.events = events
@@ -101,19 +101,19 @@ export class A2aConnection {
     this.socket.on('open', () => {
       this.sendFrame({
         type: 'hello',
-        protocolVersion: A2A_PROTOCOL_VERSION,
+        protocolVersion: S2S_PROTOCOL_VERSION,
         project: this.projectName,
         name: this.rosterName,
       })
     })
-    this.socket.on('message', (data) => { this.handleFrame(JSON.parse(frameText(data)) as A2aServerFrame) })
+    this.socket.on('message', (data) => { this.handleFrame(JSON.parse(frameText(data)) as S2sServerFrame) })
     this.socket.on('error', (error) => {
       const failure = error instanceof Error ? error : new Error(String(error))
       this.events.onError?.(failure)
       if (!this.selfPeer) this.rejectReady(failure)
     })
     this.socket.on('close', (code, reason) => {
-      const failure = new Error(`A2A connection closed (${code}): ${reason.toString() || 'no reason'}`)
+      const failure = new Error(`S2S connection closed (${code}): ${reason.toString() || 'no reason'}`)
       if (!this.selfPeer) this.rejectReady(failure)
       for (const pending of this.pending.values()) pending.reject(failure)
       this.pending.clear()
@@ -136,9 +136,9 @@ export class A2aConnection {
     baseUrl: string
     project: string
     name: string
-    events?: A2aConnectionEvents
-  }): Promise<A2aConnection> {
-    const connection = new A2aConnection(
+    events?: S2sConnectionEvents
+  }): Promise<S2sConnection> {
+    const connection = new S2sConnection(
       options.baseUrl,
       options.project,
       options.name,
@@ -159,8 +159,8 @@ export class A2aConnection {
   }
 
   /** The claimed presence identity (valid once ready). */
-  get self(): A2aPeer {
-    if (!this.selfPeer) throw new Error('A2A connection is not ready')
+  get self(): S2sPeer {
+    if (!this.selfPeer) throw new Error('S2S connection is not ready')
     return { ...this.selfPeer }
   }
 
@@ -168,7 +168,7 @@ export class A2aConnection {
    * The current roster, sorted by name.
    * @returns the live peers.
    */
-  peers(): A2aPeer[] {
+  peers(): S2sPeer[] {
     return Array.from(this.peerMap.values(), peer => ({ ...peer })).sort(
       (left, right) => left.name.localeCompare(right.name),
     )
@@ -181,15 +181,15 @@ export class A2aConnection {
    * @returns the accepted message and recipients.
    */
   send(options: {
-    target: A2aMessageRequestTarget
+    target: S2sMessageRequestTarget
     text: string
     attachments?: EncodedAttachment[]
     replyTo?: string
     messageId?: string
-  }): Promise<A2aAcceptedMessage> {
+  }): Promise<S2sAcceptedMessage> {
     const requestId = crypto.randomUUID()
     const messageId = options.messageId ?? crypto.randomUUID()
-    return new Promise<A2aAcceptedMessage>((resolve, reject) => {
+    return new Promise<S2sAcceptedMessage>((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject })
       try {
         this.sendFrame({
@@ -217,7 +217,7 @@ export class A2aConnection {
   }
 
   /** Dispatch one server frame. */
-  private handleFrame(frame: A2aServerFrame): void {
+  private handleFrame(frame: S2sServerFrame): void {
     switch (frame.type) {
       case 'claimed':
         this.selfPeer = frame.self
@@ -267,7 +267,7 @@ export class A2aConnection {
   }
 
   /** Deliver one inbound message; acknowledge success or report failure. */
-  private async deliverMessage(message: A2aRealtimeMessage): Promise<void> {
+  private async deliverMessage(message: S2sRealtimeMessage): Promise<void> {
     try {
       await this.events.onMessage?.(message)
       this.sendFrame({ type: 'delivered', messageId: message.messageId })
@@ -287,8 +287,8 @@ export class A2aConnection {
   }
 
   /** Send one frame on an open socket. */
-  private sendFrame(frame: A2aClientFrame): void {
-    if (this.socket.readyState !== WebSocket.OPEN) throw new Error('A2A WebSocket is not open')
+  private sendFrame(frame: S2sClientFrame): void {
+    if (this.socket.readyState !== WebSocket.OPEN) throw new Error('S2S WebSocket is not open')
     this.socket.send(JSON.stringify(frame))
   }
 }

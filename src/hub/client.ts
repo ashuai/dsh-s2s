@@ -3,19 +3,19 @@
  * routes, the `/v1/meta` probe, and the `/v1/history` query. The hub is a
  * trusted-network peer (no caller authentication), mirroring the omp trust
  * model — never expose a hub URL to an untrusted network. Realtime
- * presence and messaging ride {@link A2aConnection}, not this client.
+ * presence and messaging ride {@link S2sConnection}, not this client.
  * @module @dpskh/a2a/hub/client
  */
 
-import { A2aError } from '../error.ts'
-import { A2A_PROTOCOL_VERSION } from './realtime-types.ts'
-import type { A2aHistoryPage, A2aHistoryQuery, A2aProject } from './types.ts'
+import { S2sError } from '../error.ts'
+import { S2S_PROTOCOL_VERSION } from './realtime-types.ts'
+import type { S2sHistoryPage, S2sHistoryQuery, S2sProject } from './types.ts'
 
 /** Wire envelope of one route call. */
 type WireEnvelope = { result?: unknown; error?: { code: string; message: string } }
 
 /** Constructor options. */
-export interface A2aHubClientOptions {
+export interface S2sHubClientOptions {
   /** Hub base URL, e.g. `http://127.0.0.1:4173`. */
   readonly baseUrl: string
   /** Per-request timeout in ms. */
@@ -26,14 +26,14 @@ export interface A2aHubClientOptions {
 const DEFAULT_TIMEOUT_MS = 10_000
 
 /** The mesh hub client. Every method maps to one hub surface. */
-export class A2aHubClient {
+export class S2sHubClient {
   private readonly baseUrl: string
   private readonly timeoutMs: number
 
   /**
    * @param options - hub base URL and request timeout.
    */
-  constructor(options: A2aHubClientOptions) {
+  constructor(options: S2sHubClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '')
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   }
@@ -63,8 +63,8 @@ export class A2aHubClient {
    * @param meta - display name, description, and creating cwd.
    * @returns the created project.
    */
-  async createProject(name: string, meta: { displayName?: string; description?: string; createdByCwd?: string } = {}): Promise<A2aProject> {
-    const { project } = await this.call<{ project: A2aProject }>('projects.create', { name, ...meta })
+  async createProject(name: string, meta: { displayName?: string; description?: string; createdByCwd?: string } = {}): Promise<S2sProject> {
+    const { project } = await this.call<{ project: S2sProject }>('projects.create', { name, ...meta })
     return project
   }
 
@@ -72,8 +72,8 @@ export class A2aHubClient {
    * List projects.
    * @returns projects sorted by name.
    */
-  async listProjects(): Promise<A2aProject[]> {
-    const { projects } = await this.call<{ projects: A2aProject[] }>('projects.list', {})
+  async listProjects(): Promise<S2sProject[]> {
+    const { projects } = await this.call<{ projects: S2sProject[] }>('projects.list', {})
     return projects
   }
 
@@ -92,16 +92,16 @@ export class A2aHubClient {
    * @param query - project, cursors, sender filter, and limit.
    * @returns the matched messages.
    */
-  async history(query: A2aHistoryQuery): Promise<A2aHistoryPage> {
+  async history(query: S2sHistoryQuery): Promise<S2sHistoryPage> {
     const parameters = new URLSearchParams({ project: query.project })
     if (query.before !== undefined) parameters.set('before', query.before)
     if (query.after !== undefined) parameters.set('after', query.after)
     if (query.from !== undefined) parameters.set('from', query.from)
     if (query.limit !== undefined) parameters.set('limit', String(query.limit))
-    return this.fetchJson<A2aHistoryPage>(`${this.baseUrl}/v1/history?${parameters}`)
+    return this.fetchJson<S2sHistoryPage>(`${this.baseUrl}/v1/history?${parameters}`)
   }
 
-  /** Call one route with a timeout; transport and business errors fold into A2aError. */
+  /** Call one route with a timeout; transport and business errors fold into S2sError. */
   private async call<T>(method: string, params: Record<string, unknown>): Promise<T> {
     const controller = new AbortController()
     const timer = setTimeout(() => { controller.abort() }, this.timeoutMs)
@@ -115,28 +115,28 @@ export class A2aHubClient {
       })
     } catch (error) {
       const aborted = error instanceof DOMException && error.name === 'AbortError'
-      throw new A2aError(
+      throw new S2sError(
         aborted ? `hub request timed out: ${method}` : `hub request failed: ${method}`,
-        'A2A_HTTP_TRANSPORT',
+        'S2S_HTTP_TRANSPORT',
         { cause: error },
       )
     } finally {
       clearTimeout(timer)
     }
     if (!response.ok) {
-      throw new A2aError(`hub route ${method} answered HTTP ${response.status}`, 'A2A_HTTP_STATUS')
+      throw new S2sError(`hub route ${method} answered HTTP ${response.status}`, 'S2S_HTTP_STATUS')
     }
     const envelope = await response.json() as WireEnvelope
     if (envelope.error !== undefined) {
       const code = envelope.error.code === 'project-conflict'
-        ? 'A2A_PROJECT_CONFLICT'
+        ? 'S2S_PROJECT_CONFLICT'
         : envelope.error.code === 'bad-request'
-          ? 'A2A_BAD_REQUEST'
-          : 'A2A_REGISTRY'
-      throw new A2aError(envelope.error.message, code)
+          ? 'S2S_BAD_REQUEST'
+          : 'S2S_REGISTRY'
+      throw new S2sError(envelope.error.message, code)
     }
     if (envelope.result === undefined) {
-      throw new A2aError(`hub route ${method} answered without a result`, 'A2A_HTTP_TRANSPORT')
+      throw new S2sError(`hub route ${method} answered without a result`, 'S2S_HTTP_TRANSPORT')
     }
     return envelope.result as T
   }
@@ -146,9 +146,9 @@ export class A2aHubClient {
     const response = await fetch(url, init)
     const body = (await response.json().catch(() => ({}))) as T & { error?: string }
     if (!response.ok) {
-      throw new A2aError(
+      throw new S2sError(
         body.error ? body.error : `HTTP ${response.status} ${url}`,
-        'A2A_HTTP_STATUS',
+        'S2S_HTTP_STATUS',
       )
     }
     return body
@@ -168,17 +168,17 @@ export interface HubMeta {
  * Probe one hub URL and verify the protocol version.
  * @param baseUrl - the hub base URL.
  * @returns the hub meta when reachable and version-matched.
- * @throws {A2aError} when unreachable or version-mismatched.
+ * @throws {S2sError} when unreachable or version-mismatched.
  */
 export async function probeHub(baseUrl: string): Promise<HubMeta> {
-  const meta = await new A2aHubClient({ baseUrl }).meta()
+  const meta = await new S2sHubClient({ baseUrl }).meta()
   if (meta === null) {
-    throw new A2aError(`A2A hub not reachable at ${baseUrl}`, 'A2A_CLIENT_TRANSPORT')
+    throw new S2sError(`S2S hub not reachable at ${baseUrl}`, 'S2S_CLIENT_TRANSPORT')
   }
-  if (meta.protocolVersion !== A2A_PROTOCOL_VERSION) {
-    throw new A2aError(
-      `A2A protocol mismatch: client=${A2A_PROTOCOL_VERSION}, hub=${meta.protocolVersion}`,
-      'A2A_PROTOCOL_MISMATCH',
+  if (meta.protocolVersion !== S2S_PROTOCOL_VERSION) {
+    throw new S2sError(
+      `S2S protocol mismatch: client=${S2S_PROTOCOL_VERSION}, hub=${meta.protocolVersion}`,
+      'S2S_PROTOCOL_MISMATCH',
     )
   }
   return meta

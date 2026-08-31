@@ -14,29 +14,29 @@ import { Context } from '@deepseek-ai/cordis'
 import Storage from '@deepseek-ai/dsh-storage'
 import { SqliteStorageBackend } from '@deepseek-ai/dsh-storage-sqlite'
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
-import { a2aHubDomainSpec } from '../src/hub/spec.ts'
-import { A2aHubRegistry } from '../src/hub/registry.ts'
-import { A2aHubMessages } from '../src/hub/messages.ts'
-import { A2aHubServer } from '../src/hub/server.ts'
-import { A2aHubClient } from '../src/hub/client.ts'
-import { A2A_PROTOCOL_VERSION, type A2aServerFrame } from '../src/hub/realtime-types.ts'
+import { s2sHubDomainSpec } from '../src/hub/spec.ts'
+import { S2sHubRegistry } from '../src/hub/registry.ts'
+import { S2sHubMessages } from '../src/hub/messages.ts'
+import { S2sHubServer } from '../src/hub/server.ts'
+import { S2sHubClient } from '../src/hub/client.ts'
+import { S2S_PROTOCOL_VERSION, type S2sServerFrame } from '../src/hub/realtime-types.ts'
 import { decodeTextPayload, encodeBinaryPayload, encodeTextPayload } from '../src/hub/payload.ts'
 
 /** One frame queue over a raw test socket. */
 class FrameQueue {
-  private frames: A2aServerFrame[] = []
-  private waiters: Array<(frame: A2aServerFrame) => void> = []
+  private frames: S2sServerFrame[] = []
+  private waiters: Array<(frame: S2sServerFrame) => void> = []
 
-  push(frame: A2aServerFrame): void {
+  push(frame: S2sServerFrame): void {
     const waiter = this.waiters.shift()
     if (waiter) waiter(frame)
     else this.frames.push(frame)
   }
 
-  next(): Promise<A2aServerFrame> {
+  next(): Promise<S2sServerFrame> {
     const frame = this.frames.shift()
     if (frame) return Promise.resolve(frame)
-    return new Promise<A2aServerFrame>(resolve => this.waiters.push(resolve))
+    return new Promise<S2sServerFrame>(resolve => this.waiters.push(resolve))
   }
 }
 
@@ -48,14 +48,14 @@ async function connect(
 ): Promise<{ socket: WebSocket; frames: FrameQueue }> {
   const socket = new WebSocket(`${baseUrl.replace(/^http/, 'ws')}/v1/connect`)
   const frames = new FrameQueue()
-  socket.on('message', (data) => { frames.push(JSON.parse(Buffer.from(new Uint8Array(data as Buffer)).toString('utf8')) as A2aServerFrame) })
+  socket.on('message', (data) => { frames.push(JSON.parse(Buffer.from(new Uint8Array(data as Buffer)).toString('utf8')) as S2sServerFrame) })
   await new Promise<void>((resolve, reject) => {
     socket.once('open', resolve)
     socket.once('error', reject)
   })
   socket.send(JSON.stringify({
     type: 'hello',
-    protocolVersion: A2A_PROTOCOL_VERSION,
+    protocolVersion: S2S_PROTOCOL_VERSION,
     project,
     name,
   }))
@@ -69,12 +69,12 @@ async function bootHub(options?: { path?: string }) {
   ctx.storage.backend.register('sqlite', backend)
   const facility = new DomainFacility(ctx, { backend: 'sqlite' })
   ctx.storage.mount('domain', facility)
-  const domain = await facility.open(a2aHubDomainSpec)
-  const registry = new A2aHubRegistry(domain)
-  const messages = new A2aHubMessages(domain)
-  const server = new A2aHubServer({ host: '127.0.0.1', port: 0, registry, messages })
+  const domain = await facility.open(s2sHubDomainSpec)
+  const registry = new S2sHubRegistry(domain)
+  const messages = new S2sHubMessages(domain)
+  const server = new S2sHubServer({ host: '127.0.0.1', port: 0, registry, messages })
   const port = await server.listen()
-  const client = new A2aHubClient({ baseUrl: `http://127.0.0.1:${port}` })
+  const client = new S2sHubClient({ baseUrl: `http://127.0.0.1:${port}` })
   return { ctx, server, client, registry, messages }
 }
 
@@ -243,7 +243,7 @@ describe('realtime hub', () => {
   })
 
   it('keeps history across a hub restart while presence does not survive', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'a2a-realtime-'))
+    const root = await mkdtemp(join(tmpdir(), 's2s-realtime-'))
     try {
       const first = await bootHub({ path: join(root, 'hub.sqlite') })
       await first.client.createProject('durable-chat')
