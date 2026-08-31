@@ -1,69 +1,70 @@
-<center>
-<h1>@dpskh/a2a — Agent2Agent realtime mesh for the DeepSeek Harness</h1>
+# dsh-s2s — DeepSeek Harness 的 Session-to-Session 同宿主会话互联
 
-English | [中文](README.zh.md)
+> **dsh-s2s is a trimmed fork of [`@dpskh/a2a`](https://github.com/dpskh/dsh-a2a) (MIT), specialized for same-host session-to-session interconnection with session-lifecycle support.**
 
-[![dshfind](https://dshfind.com/api/card/dpskh/dsh-a2a?lang=zh)](https://dshfind.com/zh/plugins/dpskh/dsh-a2a?ref=badge)
+一个 cordis 插件,让**同一台宿主上的多个 DSH session 互相对话**——并支持**拉起已结束(静止)的 session** 参与对话。由 [`@dpskh/a2a`](https://github.com/dpskh/dsh-a2a) 裁剪特化而来。
 
-</center>
+---
 
-One package, one entry plugin. Mounting `@dpskh/a2a` 0.3 provides the **realtime A2A mesh**: the hub host (`ctx.a2aHub`: project registry + immutable message history over the storage domain, with an optional listening hub server that also serves the realtime WebSocket), the mesh client (`ctx.a2aMesh`: one WebSocket presence per joined agent with serial injection), the `a2a_peers` / `a2a_message` / `a2a_history` tools, and the `/a2a` command surface. Presence is a live socket; messages are the durable record — realtime chat on a trusted private network.
+## 鸣谢与出处(Attribution)
 
-## Configuration
+本项目基于 **[`@dpskh/a2a`](https://github.com/dpskh/dsh-a2a)** 裁剪而成,遵循 **MIT License**:
 
-```yaml
-- id: a2a
-  name: '@dpskh/a2a'
-  config:
-    hub:                      # optional: run the mesh hub server
-      host: 127.0.0.1
-      port: 43123             # base bind port
-      maxPort: 43223          # optional: walk up on EADDRINUSE
-    mesh:                     # optional: mesh client
-      project: main           # project to connect to (defaults to main)
-      agentId: main           # local agent this presence belongs to
-      name: main              # roster name; defaults to the agent id
-      autoConnect: true       # connect when the configured agent registers
-      persistConnections: false # remember each session's last connection and rejoin it
-      reconnectMs: 500        # initial reconnect delay (doubles to 10 s)
+- 上游:dpskh/[dsh-a2a](https://github.com/dpskh/dsh-a2a) — 实时 A2A mesh(hub、WebSocket presence、串行注入、不可变消息历史)
+- 基线:upstream `main` 快照(2026-08-21 push;核心包 v0.3.0 树)——见 git tag `vendor-base`
+- 全部连接管理、协议与注入核心代码的功劳属于上游作者;本 fork 的增量见下方[裁剪与新增](#裁剪与新增)。
+
+**如果你需要的是跨进程/跨机器的 DSH mesh,请直接使用上游 [`@dpskh/a2a`](https://github.com/dpskh/dsh-a2a)——那是它的主场,也是本项目的上游。**
+
+## 与上游的关系:部署互斥与分工
+
+s2s 是上游的同宿主**特化**,能力天然重叠,因此:
+
+- ⛔ **不要同时挂载两者**。同机同挂会得到双 hub、双工具族(`a2a_*` 与 `s2s_*`)、同一会话双 presence 与重复投递——这是部署冲突,不是功能互补。
+- ✅ **分工**:同一台机器内 session 互联(含拉起静止会话)→ 用 **s2s**;跨进程/跨机器的 DSH mesh → 用上游 **a2a**。
+- ℹ️ 若"外部 agent"指**非 DSH 的标准 A2A 协议实现**(AgentCard / JSON-RPC):上游与本 fork 均不提供该能力,请使用标准协议网关类插件(如 dshfind 上的 `@ryubyte/dsh-a2a`)。
+
+## 定位与范围
+
+| | s2s(本项目) | 上游 @dpskh/a2a |
+|---|---|---|
+| 拓扑 | **同宿主**(单进程优先;hub 监听代码保留、默认不开) | 跨进程/跨机(可信局域网) |
+| 会话生命周期 | ✅ 静止(done)session 可被拉起参与对话(路线图 R2) | ❌ 仅在线接收方 |
+| 防回环/预算 | ✅ 发送侧 hop/限速(路线图 R3) | ❌ |
+| 浏览器协作 UI / 命令面 | ❌ 已裁剪 | ✅ |
+| 协议内核 | 与上游同源(mesh protocol v3) | 同左 |
+
+## 裁剪与新增
+
+**保留(上游功劳)**:mesh 客户端(串行注入 `followup/inject`、`persistConnections`、退避重连)、hub 全套(注册表/不可变历史/presence/协议 v3)、3 个模型工具、消息附件机制(协议组成部分,按需使用)、错误分类与 invariant 体系、vitest 测试套件。
+
+**裁剪**:浏览器视图层(`view.ts`/`activity.ts`)、命令面(`commands.ts`)、浏览器测试替身(`test/` stubs)与 `ui-a2a` 浏览器包(不随 fork)。
+
+**新增(s2s 增量)**:`mailbox.ts` 静止会话信箱、`lifecycle.ts` 经 `AgentRegistry.resume` 拉起 + `agent.followup` 投递 + 授权闸、`budget.ts` 发送侧防回环预算。
+
+## 路线图(Roadmap)
+
+- **R0 ✅ vendor 导入**:上游快照入库(`vendor-base` tag),出处与鸣谢就位。
+- **R1 品牌与裁剪**:包名 `dsh-s2s`、插件 id、`ctx.s2sHub`/`s2sMesh`、工具改名 `s2s_peers / s2s_message / s2s_history`;按上表裁剪;patch 默认纯 in-process(不开 hub 监听)。
+- **R2 生命周期(核心增量)**:静止会话信箱;`AgentRegistry.resume` 拉起(`agent/created` → drain → `agent.followup` 投递);防双开;拉起授权闸(同 workspace 直达、跨 workspace 询问);拉起后默认留在 live-idle。
+- **R3 预算与礼仪**:hop 上限/对间限速(发送侧强制);`s2s-etiquette` skill。
+- **R4 稳定发布**:vitest 全绿、`0.3.0-s2s.0` tag、挂载文档。
+- **远期可选**:离线信箱上移 hub 侧(storage 域);与外部标准 A2A agent 互通(评估独立网关,不在本包内做)。
+
+## 状态
+
+**重构中(R0→R1 之间)**:当前树 = 上游基线 + 本 README;R1 起代码面才体现 s2s 命名与裁剪。上游用法在 R1 前仍然有效(见 `REPOSITORY.md` 与 `cordis.patch.yml`)。
+
+## 开发
+
+```sh
+pnpm install
+pnpm run typecheck:all
+pnpm run test
 ```
 
-The hub needs a routed storage backend: mount `@deepseek-ai/dsh-storage`, a backend (`storage-json` or `storage-sqlite`), and `@deepseek-ai/dsh-storage-domain` with the backend routed to the `a2a` domain. The entry plugin composes the hub host service (`ctx.a2aHub`), the mesh client (`ctx.a2aMesh`), and — when a mesh is configured — the tool and command plugins (cordis activates them by their inject dependencies). Removed 0.2 mesh fields (`persistBindings`, `autoRejoin`, `pollIntervalMs`, `heartbeatMs`, `caps`) are ignored for compatibility with copied 0.2 configs.
+测试沿用上游 vitest 套件(R1 起随裁剪同步增删;新增生命周期模块将补专属 spec)。
 
-## The mesh
+## License
 
-- **Hub** (`ctx.a2aHub`): authoritative project registry and the append-only message history (per-project monotonic sequences, project-scoped `messageRef`s like `demo:42`). The optional hub server serves the project/history routes over HTTP and the realtime WebSocket at `/v1/connect` (protocol version 3).
-- **Presence**: a presence exists if and only if one WebSocket is alive. Claimed roster names are unique per project; a same-named later connection is a new presence and inherits nothing. Hub restart clears every presence while the message history survives.
-- **Messages**: immutable, idempotent by `messageId` (retrying the same body returns the original message; reusing the id for different content fails with `MessageIdConflictError`). Direct sends resolve the recipient's current presence at accept time and fail immediately when absent; project broadcasts freeze the current presence snapshot (excluding the sender) and never backfill later joiners. `replyTo` provides causality inside the same project history. Text and attachments share a 4 MiB decoded-content budget; up to eight attachments per message travel as base64 (gzip when it shrinks).
-- **Delivery**: in-memory outcomes reported to the sender — `delivered` proves the receiving client injected the message, `failed` a materialization/injection error, `disconnected` a socket that closed before acknowledging.
-- **Mesh client** (`ctx.a2aMesh`): each joined agent owns one connection (project + roster name). Inbound messages are pushed serially in hub-assigned sequence and injected into the owning agent's session (follow-up turn when idle, plain context when busy), with attachments materialized under the system temp dir. Unexpected drops auto-reconnect with backoff while the connection is desired; a rejected claim (name in use, unknown project, protocol mismatch) stops wanting the connection. `a2a/presence-changed` events announce local connect/disconnect; `a2a/delivery` events announce delivery outcomes. Disposed agents drop their presence automatically. With `persistConnections`, each successful connect records `agentId → (project, name)` in the `a2a-connections` settings namespace, and an agent registering with a stored record rejoins it — the GUI path, where session ids are dynamic and no static `agentId` is configured; an explicit disconnect forgets the record. Each membership also tracks a local conversation-activity view (`idle` / `conversing` / `working`, inferred from sends, deliveries, and inbound messages — no activity state crosses the hub wire) and exposes it in `status()` for the connection-graph animations; activity transitions emit `a2a/change` so the browser refreshes live.
-
-## Tools and commands
-
-- `a2a_peers` — list the exact roster names currently present in this project.
-- `a2a_message` — send to one current peer (`target: {type: 'agent', name}`) or broadcast to all current peers (`target: {type: 'project'}`), with optional `replyTo`, attachment file paths, and an idempotency `messageId`. The reply arrives passively — never wait or poll after send.
-- `a2a_history` — review earlier project messages using `before`, `after`, `limit`, or `from` (past context only).
-- `/a2a hub`, `/a2a project create|list|delete`, `/a2a connect <project> [--as <name>]`, `/a2a disconnect`, `/a2a status`, `/a2a peers`, `/a2a history [--before <ref>] [--after <ref>] [--limit <n>] [--from <name>]`, `/a2a help`.
-
-## Web collaboration controls
-
-`@dpskh/ui-a2a` consumes one Host `a2a.snapshot` per session: connection identity, the live roster, and projects. Local and remote roster changes emit `host/a2a-changed`; the browser refetches the snapshot so its Overview page, Projects page, badge, and quick panel stay on one state source. The roster is primary; the auxiliary topology uses an orbit for up to six peers and a grid above that threshold, and hides on narrow layouts. The browser never connects to the Hub WebSocket.
-
-## Trust model
-
-The mesh assumes a fully trusted private network: hub endpoints do not authenticate callers, and caller-supplied project and member identities are trusted claims. Do not expose a hub to the public Internet or an untrusted network.
-
-## Model Experience
-
-Indirectly, through the `a2a_*` tools, the `/a2a` command, and injected inbound envelopes: project member ids, message refs, join outcomes, and delivered messages can enter the conversation.
-
-#### KV Cache effect
-
-Prefix-stable while the plugin config and tool definitions are unchanged; project, roster, or history changes do not alter the schemas.
-
-## Known Limitations and Deferred Work
-
-- **Live recipients only** — direct sends fail immediately when the recipient is not currently present; there is no offline delivery or durable roster.
-- **Single hub per client** — a mesh client connects to one hub at a time; multi-hub fan-out is deferred.
-- **In-memory delivery outcomes** — `delivered`/`failed`/`disconnected` are not persisted; rich delivery metadata is deferred.
-- **Temp-dir attachment materialization** — inbound attachments land under the system temp directory; a configurable session-scoped location is deferred.
+MIT。上游版权与许可文件保留于 [`LICENSE`](LICENSE);本 fork 的修改同样以 MIT 发布。
