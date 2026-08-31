@@ -2,10 +2,12 @@
     - id: dsh-s2s
       name: 'dsh-s2s'
       config:
-        hub:
-          host: 127.0.0.1
-          port: 43123
-          maxPort: 43223
+        hub: {}                     # in-process hub service, no listening socket
         mesh:
           project: main
           persistConnections: true
+        lifecycle:
+          autoResume: deny          # conservative default; flip to allow to auto-wake
+        budget:
+          maxHops: 6
+          ratePerMinute: 10

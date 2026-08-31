@@ -37,6 +37,9 @@ export type S2sErrorCode =
   | 'S2S_CLAIM_REJECTED'
   | 'S2S_INVALID_FRAME'
   | 'S2S_RECIPIENT_NOT_PRESENT'
+  | 'S2S_BUDGET_EXCEEDED'
+  | 'S2S_BUDGET_RATE'
+  | 'S2S_LIFECYCLE'
 
 /**
  * A wire-format or registry failure in the s2s seam.

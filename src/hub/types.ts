@@ -81,6 +81,7 @@ export interface S2sProject {
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     s2s: S2sMessageSource
+    's2s-lifecycle': S2sLifecycleMessageSource
   }
 }
 
@@ -91,4 +92,11 @@ export interface S2sMessageSource {
   msgId: string
   /** The project-scoped friendly reference. */
   messageRef: string
+}
+
+/** Producer provenance of a lifecycle-drained (dormant wake) message. */
+export interface S2sLifecycleMessageSource {
+  kind: 's2s-lifecycle'
+  /** The mailbox entry id this delivery drained. */
+  msgId: string
 }

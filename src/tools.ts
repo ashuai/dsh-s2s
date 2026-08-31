@@ -15,6 +15,9 @@ import { ASYNC_REPLY_GUIDANCE } from './mesh.ts'
 import type { S2sAttachmentReference } from './attachments.ts'
 import { materializeAttachments } from './attachments.ts'
 import type { S2sMessageView } from './mesh.ts'
+import type { S2sBudget } from './budget.ts'
+import { S2sLifecycleService } from './lifecycle.ts'
+import type { S2sDiscoveryService } from './discovery.ts'
 
 /** Render one tool result as plain text. */
 function textRender(_args: object, value: { text: string }): ContentBlock[] {
@@ -40,7 +43,7 @@ function formatMessage(message: S2sMessageView, attachments: readonly S2sAttachm
  * @param mesh - the mesh client service.
  * @returns the tool definitions.
  */
-export function buildTools(mesh: S2sMeshService): ToolDefinition[] {
+export function buildTools(mesh: S2sMeshService, opts: { budget?: S2sBudget; lifecycle?: S2sLifecycleService; discovery?: S2sDiscoveryService } = {}): ToolDefinition[] {
   return [
     defineTool({
       name: 's2s_peers',
@@ -103,6 +106,9 @@ export function buildTools(mesh: S2sMeshService): ToolDefinition[] {
       execute: async (args, exec) => {
         const target = args.target
         const attachmentCount = args.attachments?.length ?? 0
+        // Sender-side anti-loop budget (when a budget block is configured):
+        // direct sends carry hop 0; relays are the lifecycle's concern.
+        opts.budget?.check(String(exec.agent?.id ?? 'anonymous'), target.type === 'agent' ? String(target.name) : 'project', 0)
         const accepted = await mesh.message({
           ...(exec.agent === undefined ? {} : { from: String(exec.agent.id) }),
           target: target.type === 'project'
@@ -156,14 +162,75 @@ export function buildTools(mesh: S2sMeshService): ToolDefinition[] {
         return { text: formatted.join('\n\n') }
       },
     }),
+    defineTool({
+      name: 's2s_sessions',
+      description: 'List known sessions with lifecycle state (live-idle / live-busy / dormant). Use s2s_resume to wake a dormant session with a message; never guess session ids.',
+      parameters: {
+        query: { type: 'string', description: 'Optional substring filter over session id or workspace directory name.' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { text: { type: 'string', required: true } },
+        },
+        render: textRender,
+      },
+      execute: async (args) => {
+        if (opts.discovery === undefined) return { text: 's2s discovery unavailable (mesh not mounted).' }
+        const sessions = await opts.discovery.list(args.query)
+        if (sessions.length === 0) return { text: 'No sessions found.' }
+        return {
+          text: sessions.map(session =>
+            `${session.sessionId}  ${session.state}  ws=${session.workspaceDir}${session.lastActivity === undefined ? '' : `  last=${new Date(session.lastActivity).toISOString()}`}`,
+          ).join('\n'),
+        }
+      },
+    }),
+    defineTool({
+      name: 's2s_resume',
+      description: 'Wake a dormant (done) session with one message: the message is queued durably, and when lifecycle autoResume=allow the session is resumed and delivered immediately; with deny it waits in the mailbox. Find session ids with s2s_sessions.',
+      parameters: {
+        session_id: { type: 'string', required: true, description: 'Target session id from s2s_sessions.' },
+        text: { type: 'string', required: true, description: 'The message text to deliver after the wake.' },
+        from: { type: 'string', description: 'Optional sender label shown to the resumed session (defaults to your agent id).' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { text: { type: 'string', required: true } },
+        },
+        render: textRender,
+      },
+      execute: async (args, exec) => {
+        if (opts.lifecycle === undefined) {
+          return { text: 's2s lifecycle is not configured: add a lifecycle config block to enable waking dormant sessions.' }
+        }
+        S2sLifecycleService.assertSafeSessionId(args.session_id)
+        const msgId = `wake-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        const outcome = await opts.lifecycle.queueForDormant({
+          sessionId: args.session_id,
+          from: args.from ?? String(exec.agent?.id ?? 'unknown'),
+          text: args.text,
+          msgId,
+        })
+        const queued = await opts.lifecycle.queuedCount(args.session_id)
+        return {
+          text: outcome === 'resumed'
+            ? `Session ${args.session_id} resumed and message delivered (still queued: ${queued}).`
+            : `Session ${args.session_id} is dormant; message queued (${queued} total). Delivery happens when the session is resumed (autoResume=allow) or reopened manually.`,
+        }
+      },
+    }),
   ]
 }
 
 /** Cordis plugin name of the tool family. */
 export const name = 's2s-tools'
 
-/** The mesh service and tool registry must be present before activation. */
-export const inject = ['s2sMesh', 'tools']
+/** The mesh, discovery, and tool registry services must be present first. */
+export const inject = ['s2sMesh', 's2sDiscovery', 'tools']
 
 /**
  * Register the s2s tool family on `ctx.tools`. Cordis activates this plugin
@@ -174,7 +241,10 @@ export const inject = ['s2sMesh', 'tools']
 export function apply(ctx: Context): void {
   const tools = ctx.get('tools') as { register(definition: ToolDefinition): () => void }
   const mesh = ctx.get('s2sMesh') as S2sMeshService
-  const disposers = buildTools(mesh).map(definition => tools.register(definition))
+  const budget = ctx.get('s2sBudget') as S2sBudget | undefined
+  const lifecycle = ctx.get('s2sLifecycle') as S2sLifecycleService | undefined
+  const discovery = ctx.get('s2sDiscovery') as S2sDiscoveryService | undefined
+  const disposers = buildTools(mesh, { ...(budget === undefined ? {} : { budget }), ...(lifecycle === undefined ? {} : { lifecycle }), ...(discovery === undefined ? {} : { discovery }) }).map(definition => tools.register(definition))
   ctx.effect(() => () => {
     for (const dispose of disposers) dispose()
   }, 's2s-tools.disposers')

@@ -15,6 +15,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { S2sHubHostService, type S2sHubHostConfig } from './hub/host.ts'
 import { S2sMeshService, type MeshConfig } from './mesh.ts'
+import { S2sBudget, type BudgetConfig } from './budget.ts'
+import { S2sLifecycleService, type LifecycleConfig } from './lifecycle.ts'
+import { S2sDiscoveryService } from './discovery.ts'
 import * as toolsPlugin from './tools.ts'
 
 export { S2sError } from './error.ts'
@@ -44,6 +47,14 @@ export type { S2sConnectionEvents } from './hub/connection.ts'
 export { S2sHubHostService } from './hub/host.ts'
 export type { S2sHubHostConfig } from './hub/host.ts'
 export { S2sMeshService } from './mesh.ts'
+export { S2sBudget, BUDGET_DEFAULTS } from './budget.ts'
+export type { BudgetConfig } from './budget.ts'
+export { S2sMailbox } from './mailbox.ts'
+export type { MailboxEntry } from './mailbox.ts'
+export { S2sLifecycleService } from './lifecycle.ts'
+export type { LifecycleConfig } from './lifecycle.ts'
+export { S2sDiscoveryService, DEFAULT_SESSIONS_ROOT } from './discovery.ts'
+export type { S2sSessionInfo } from './discovery.ts'
 export type { MeshConfig, S2sChange, S2sMeshStatus, S2sMessageView, StoredConnection } from './mesh.ts'
 export { DEFAULT_PROJECT, ASYNC_REPLY_GUIDANCE } from './mesh.ts'
 export { snapshotAttachments, materializeAttachments } from './attachments.ts'
@@ -79,12 +90,20 @@ export const name = 'dsh-s2s'
 /** Services the entry plugin itself consumes (children declare their own). */
 export const inject: string[] = []
 
-/** One plugin configuration: hub host and mesh client. */
+/** One plugin configuration: hub host, mesh client, and s2s lifecycle/budget. */
 export interface Config {
-  /** Optional hub host: run the mesh hub (registry + history + HTTP/WebSocket server). */
-  readonly hub?: S2sHubHostConfig
+  /**
+   * Optional hub host. Providing the block mounts the hub service (registry
+   * + history over the storage domain); providing `server` additionally
+   * listens as the mesh hub (HTTP + realtime WebSocket).
+   */
+  readonly hub?: { server?: Omit<S2sHubHostConfig, 'port'> & { port: number } }
   /** Optional mesh client: connect one agent's presence on mount. */
   readonly mesh?: MeshConfig
+  /** Optional lifecycle: mailbox + resume for dormant sessions (off when absent). */
+  readonly lifecycle?: { enabled?: boolean; autoResume?: string; mailboxDir?: string }
+  /** Optional sender-side anti-loop budget (off when absent). */
+  readonly budget?: BudgetConfig
 }
 
 /** Config validator. */
@@ -92,9 +111,20 @@ export const Config: z<Config> = z.object({
   // schemastery object schemas default to `{}` when absent; the explicit
   // `default(undefined)` keeps the optional fields truly absent.
   hub: z.object({
-    host: z.string().default('127.0.0.1'),
-    port: z.number().required(),
-    maxPort: z.number(),
+    server: z.object({
+      host: z.string().default('127.0.0.1'),
+      port: z.number().required(),
+      maxPort: z.number(),
+    }),
+  }).default(undefined as never),
+  lifecycle: z.object({
+    enabled: z.boolean(),
+    autoResume: z.string(),
+    mailboxDir: z.string(),
+  }).default(undefined as never),
+  budget: z.object({
+    maxHops: z.number(),
+    ratePerMinute: z.number(),
   }).default(undefined as never),
   mesh: z.object({
     hubUrl: z.string(),
@@ -117,11 +147,33 @@ export const Config: z<Config> = z.object({
  */
 export function apply(ctx: Context, config: Config): void {
   if (config.hub !== undefined) {
-    ctx.plugin(S2sHubHostService, config.hub)
+    // The hub service without a server config is a pure in-process hub
+    // (registry + history, no listening socket) — the s2s default shape.
+    ctx.plugin(S2sHubHostService, config.hub.server === undefined
+      ? undefined
+      : {
+        ...(config.hub.server.host === undefined ? {} : { host: config.hub.server.host }),
+        port: config.hub.server.port,
+        ...(config.hub.server.maxPort === undefined ? {} : { maxPort: config.hub.server.maxPort }),
+      })
+  }
+  if (config.budget !== undefined) {
+    ctx.provide('s2sBudget', new S2sBudget(config.budget))
+  }
+  if (config.lifecycle !== undefined) {
+    // Normalize at the boundary: any unknown autoResume value means deny —
+    // waking a human's dormant session is the loud direction.
+    ctx.plugin(S2sLifecycleService, {
+      ...(config.lifecycle.enabled === undefined ? {} : { enabled: config.lifecycle.enabled }),
+      autoResume: config.lifecycle.autoResume === 'allow' ? 'allow' : 'deny',
+      ...(config.lifecycle.mailboxDir === undefined ? {} : { mailboxDir: config.lifecycle.mailboxDir }),
+    })
   }
   if (config.mesh !== undefined) {
     ctx.plugin(S2sMeshService, config.mesh)
-    // The tool plugin declares the mesh service and its registries as
+    // Session discovery backs the s2s_sessions tool; mounted with the mesh.
+    ctx.plugin(S2sDiscoveryService)
+    // The tool plugin declares the mesh, discovery, and registry services as
     // inject dependencies, so cordis activates them in the right order
     // with no timing coupling (the module object carries the `inject`
     // metadata the fiber resolves).

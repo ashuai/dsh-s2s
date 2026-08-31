@@ -131,8 +131,9 @@ describe('s2s tools', () => {
       },
     } as never)
     ctx.provide('s2sMesh', stubMesh() as never)
+    ctx.provide('s2sDiscovery', { list: async () => [] } as never)
     await ctx.plugin(apply)
-    expect(registered.map(tool => tool.name)).toEqual(['s2s_peers', 's2s_message', 's2s_history'])
+    expect(registered.map(tool => tool.name)).toEqual(['s2s_peers', 's2s_message', 's2s_history', 's2s_sessions', 's2s_resume'])
     await ctx.fiber.dispose()
     expect(disposer).toHaveBeenCalled()
   })

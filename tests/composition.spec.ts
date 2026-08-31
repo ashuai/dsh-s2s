@@ -26,7 +26,7 @@ async function harness(options: { mesh?: boolean } = {}) {
   const ctx = new Context()
   await mountStorage(ctx)
   await ctx.plugin(s2sApply, {
-    hub: { host: '127.0.0.1', port: 0 },
+    hub: { server: { host: '127.0.0.1', port: 0 } },
     ...(options.mesh === false
       ? {}
       : {
@@ -64,15 +64,15 @@ describe('s2s composition', () => {
     const agent = { id: 'agent-a', status: 'idle', followup: vi.fn(), inject: vi.fn() }
     ctx.provide('agents', { get: () => agent } as never)
     await ctx.plugin(s2sApply, {
-      hub: { host: '127.0.0.1', port: 0 },
+      hub: { server: { host: '127.0.0.1', port: 0 } },
       mesh: { hubUrl: 'http://127.0.0.1:1', project: 'mesh', agentId: 'agent-a' },
     })
     const mesh = ctx.get('s2sMesh') as S2sMeshService
     expect(mesh).toBeDefined()
     await vi.waitFor(() => {
-      expect(tools).toHaveLength(3)
+      expect(tools).toHaveLength(5)
     }, { timeout: 2000 })
-    expect(tools.map(t => (t as { name: string }).name)).toEqual(['s2s_peers', 's2s_message', 's2s_history'])
+    expect(tools.map(t => (t as { name: string }).name)).toEqual(['s2s_peers', 's2s_message', 's2s_history', 's2s_sessions', 's2s_resume'])
     await ctx.fiber.dispose()
   })
 
@@ -92,7 +92,7 @@ describe('s2s composition', () => {
   it('mounts the hub server with a default host', async () => {
     const ctx = new Context()
     await mountStorage(ctx)
-    await ctx.plugin(s2sApply, { hub: { port: 0 } })
+    await ctx.plugin(s2sApply, { hub: { server: { port: 0 } } })
     const hub = ctx.get('s2sHub') as S2sHubHostService
     await vi.waitFor(() => {
       if (hub.port === undefined) throw new Error('hub not listening')
@@ -105,7 +105,7 @@ describe('s2s composition', () => {
   it('mounts the hub with a maxPort range', async () => {
     const ctx = new Context()
     await mountStorage(ctx)
-    await ctx.plugin(s2sApply, { hub: { host: '127.0.0.1', port: 0, maxPort: 65535 } })
+    await ctx.plugin(s2sApply, { hub: { server: { host: '127.0.0.1', port: 0, maxPort: 65535 } } })
     const hub = ctx.get('s2sHub') as S2sHubHostService
     await vi.waitFor(() => {
       if (hub.port === undefined) throw new Error('hub not listening')
@@ -134,7 +134,7 @@ describe('s2s composition', () => {
     const agent = { id: 'agent-a', status: 'idle', followup: vi.fn(), inject: vi.fn() }
     ctx.provide('agents', { get: () => agent } as never)
     await ctx.plugin(s2sApply, {
-      hub: { host: '127.0.0.1', port: 0 },
+      hub: { server: { host: '127.0.0.1', port: 0 } },
       mesh: { project: 'mesh', agentId: 'agent-a' },
     })
     const hub = ctx.get('s2sHub') as S2sHubHostService
