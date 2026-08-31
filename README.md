@@ -53,7 +53,7 @@ s2s 是上游的同宿主**特化**,能力天然重叠,因此:
 
 ## 状态
 
-**重构中(R0→R1 之间)**:当前树 = 上游基线 + 本 README;R1 起代码面才体现 s2s 命名与裁剪。上游用法在 R1 前仍然有效(见 `REPOSITORY.md` 与 `cordis.patch.yml`)。
+**R0–R2 已完成,测试 65/65 全绿**:品牌与裁剪(R1)、生命周期模块 mailbox/resume/discovery/budget 与 `s2s_resume`/`s2s_sessions` 工具(R2)均已落地;`lifecycle`/`budget` 配置块缺席即不挂载(按需加载)。剩余:R3 礼仪 skill 与 R4 发布 tag。挂载形态见 `cordis.patch.yml`。
 
 ## 开发
 
