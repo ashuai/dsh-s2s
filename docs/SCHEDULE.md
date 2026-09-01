@@ -4,7 +4,7 @@
 
 ## 0. 背景与结论
 
-- DSH 上游有 `@deepseek-ai/dsh-schedule`(`createEveryScheduleRecord`/`createAtScheduleRecord`/`MIN_EVERY_INTERVAL_SECONDS`),是原生定时提醒;**但当前 web profile 未挂载它**(组合树只有 `timer`,node_modules 也未链 schedule)。
+- DSH 上游有 `@deepseek-ai/dsh-schedule`(`createEveryScheduleRecord`/`createAtScheduleRecord`/`MIN_EVERY_INTERVAL_SECONDS`),是原生定时提醒;是否挂载**取决于你的部署**(有的部署只挂低层 `timer` 而未挂 schedule)。
 - 本方案**不依赖上游 schedule 包的挂载状态**,在 s2s 内做最小的、会话内的定时唤醒,复用已有的按名寻址(discovery)与拉起(lifecycle)/投递(broker)。
 - **核心判断**:定时唤醒 = **到点把一条携带会话上下文的指令喂给目标会话**;不应造一个独立的全局调度器,而应让 **job 挂在会话下**——因为「做什么」依赖那个会话的上下文,且天然与其生命周期(静止/忙碌)对齐。
 
@@ -59,7 +59,7 @@ s2s_schedule action=cancel id=<jobId>
 ## 5. 与 DSH 原生 dsh-schedule 的关系
 
 - 可**对齐其领域模型**(every/at、reminder framing、最小间隔)以保持一致性;但**独立实现**轻量、会话内、按标题寻址的版本,不依赖其挂载。
-- 若以后 web profile 挂上 `dsh-schedule`,可把 job 投递改为走它的 remind 机制,本服务退化为 job 存储层。
+- 若部署挂上 `dsh-schedule`,可把 job 投递改为走它的 remind 机制,本服务退化为 job 存储层。
 
 ## 6. 边界与诚实声明
 
