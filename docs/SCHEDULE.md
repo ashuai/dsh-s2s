@@ -1,77 +1,52 @@
-# dsh-s2s 定时唤醒解决方案(设计稿)
+# dsh-s2s 定时注入方案(修正版,方案先行)
 
-> 目标:让一个会话能「上定时器」——每隔 N 或定点**拉起它干活**。这是**会话内的功能**,需要**该会话的上下文**(任务内容、它的设定),因此 job 归属会话、携带该会话要执行的指令。
+> **功能 = 单会话内「定时拉起 + 注入 prompt」**。跨会话(按名唤醒/注入其他 session)是 **s2s 的本职**(s2s_sessions/s2s_resume/s2s_message + broker/lifecycle),**不在本功能范围**。
 
-## 0. 背景与结论
+## 0. 结论(一句话)
 
-- DSH 上游有 `@deepseek-ai/dsh-schedule`(`createEveryScheduleRecord`/`createAtScheduleRecord`/`MIN_EVERY_INTERVAL_SECONDS`),是原生定时提醒;是否挂载**取决于你的部署**(有的部署只挂低层 `timer` 而未挂 schedule)。
-- 本方案**不依赖上游 schedule 包的挂载状态**,在 s2s 内做最小的、会话内的定时唤醒,复用已有的按名寻址(discovery)与拉起(lifecycle)/投递(broker)。
-- **核心判断**:定时唤醒 = **到点把一条携带会话上下文的指令喂给目标会话**;不应造一个独立的全局调度器,而应让 **job 挂在会话下**——因为「做什么」依赖那个会话的上下文,且天然与其生命周期(静止/忙碌)对齐。
+**依赖官方 `@deepseek-ai/dsh-schedule` 作为 cron 引擎(durable、D5 安全、session-local 全内建),我们只加一层「执行 framing」薄封装;不重造调度器。**
 
-## 1. 为什么是会话内(且要会话上下文)
+## 1. 为什么引擎用官方(已验证)
 
-- 用户语义是「给产品会话上定时器,每小时拉起它干活」——job 是产品的,任务内容是产品要执行的。
-- 若做成全局 cron,需额外把任务/上下文塞给目标会话,违背「会话自持任务」的直觉,也难处理该会话独有的设定/待办。
-- 把 job 存在**会话名下**(如 `~/.dsh/s2s/jobs/<target>/*.json`),触发时读该会话上下文做投递,语义闭合、可持久、可迁移。
+- **cron 引擎内建**:`schedule_create/list/delete` 建记录(创建是按需,像工具),写进**会话日志**由 `ScheduleRuntime` **自我驱动、按周期自动触发**并注入——不是「调一次才动一次」的 skill。
+- **durable**:`schedule/change` 事件重放即恢复,重启/自愈。
+- **D5 安全**:idle 才投(不打断在跑的 turn)、`resolveEveryOccurrence` 只取最新一次到期(静止会话唤醒**只触发一次**,不补 backlog)。
+- **session-local**:工具作用于「当前会话」——**正是「自己给自己定时」的语义**。
 
-## 2. Job 模型(最小)
+## 2. 我们唯一要加的:执行 framing(薄封装)
 
-```ts
-interface S2sScheduleJob {
-  id: string              // 稳定 id
-  target: string          // 目标会话标题/name(按名解析),或 sessionId
-  everySeconds?: number    // 周期触发(如 3600)
-  atIso?: string           // 定点一次触发(与 every 二选一)
-  text: string             // 触发时投递的指令(可引用目标会话上下文)
-  from?: string            // 发送者标签,默认 scheduler
-  enabled: boolean,
-  nextAt: number           // 下次触发 epoch ms
-  createdAt: number
-}
-```
+官方到点注入是 **展示提醒给用户、且注明不可当新指令**——即**展示提醒**。我们要的是**让会话拿 prompt 去执行**。
 
-- `every` 用秒(建议 ≥10s 避免测试抖动);`at` 一次,触发后删除;`every` 持续,触发后 `nextAt += every`。
+- 所以在官方触发点之上,**加一层薄库**:把注入改写为 **`source: { kind: 's2s-schedule' }` + framing「这是调度的任务指令,请执行,而非仅展示;来源 = 任务创建者」**。
+- **只改注入语义,不重建调度器**;官方仍是持久化/触发/D5 的承担者。
+- 挂载方式:`schedule?: { enabled?: boolean; framing?: string }` 或一个独立小 plugin(待定,见 §5 开放问题)。
 
-## 3. 服务与流程
+## 3. 触发后语义
 
-- **`src/schedule.ts` → `S2sScheduleService`**,`inject ['agents']`;配置 `schedule?: { enabled?: boolean; dir?: string }`(absent 不挂载)。
-- **持久化**:`~/.dsh/s2s/jobs/<id>.json`,原子写;mount 时加载并恢复 `nextAt`(重启后到点继续)。
-- **触发**:进程内 timer(`setInterval`,如 30s)扫描;`now >= nextAt` 时:
-  1. `discovery.resolve(target)` 按名解析(现读标题)。
-  2. 目标 **live-idle** → `broker.deliver(text)`(followup,立即一轮)。
-  3. 目标 **live-busy** → **跳过本轮**并推后 `nextAt`(防叠加/防打断正在跑的任务)。
-  4. 目标 **dormant** → `lifecycle.queueForDormant`(`autoResume=allow` 则 resume 拉起 + 投递;否则入信箱等重开)。
-  5. 推进 `nextAt`,写回并持久化。
-- **防重入**:`nextAt` 推进 + busy 跳过;同一 job 不并发触发。
+1. 到点(官方 runtime 判定 due + idle)→ 我方薄层注入执行 framing 的 prompt。
+2. 目标会话**收到后该做什么**,仍取决于**该会话自己的模型/自主性**(D5):我们保证「到点注入一条要执行的 prompt」,不保证它自动跑完整串活——**诚实边界**。
+3. 会话若已 **dormant**:官方 `isLive()` 门控**不主动唤醒**;如需「定时唤醒静止会话」,这是 **s2s resume 的本职**,本功能不重复——跨会话行为由 s2s 兜底。
 
-## 4. 工具形态
+## 4. 范围边界(明确不做)
 
-`s2s_schedule`(与 `s2s_sessions`/`s2s_resume` 同族):
+- ❌ 不做跨会话定时注入(归 s2s)。
+- ❌ 不自建调度器/持久化(官方已给)。
+- ✅ 只做:引擎复用官方 + 一层执行 framing。
 
-```text
-s2s_schedule action=list
-s2s_schedule action=create target=产品 every=3600 text=每小时检查待办 from=scheduler
-s2s_schedule action=cancel id=<jobId>
-```
+## 5. 开放问题(实现时要定)
 
-- 用**标题(name)**定位目标(与 s2s_sessions 一致);`session_id` 兜底消歧;1 工具 3 action,最小界面。
+- **挂载点**:官方 runtime 在 `agent.followup(message)` 时注入;我们的执行 framing 是**替换官方注入**还是**在其后追加**?需读官方 `lib/index.js` 的 `injectMessage`/`requestDrive` 细节确认最薄 hook 点。
+- **间隔下限**:官方 `MIN_EVERY_INTERVAL_SECONDS = 300`(every ≥5min);若需更短的可配下限,测试走 `after`/`at` 或调低(官方仅对 every 设下限)。
+- **依赖/版本**:官方 peers `^0.1.1-rc.2` vs dsh-s2s `^0.1.0-rc.6`——官方独立挂载(不进 s2s peers),运行时版本线需与宿主一致。
 
-## 5. 与 DSH 原生 dsh-schedule 的关系
+## 6. 测试锚点(实现后)
 
-- 可**对齐其领域模型**(every/at、reminder framing、最小间隔)以保持一致性;但**独立实现**轻量、会话内、按标题寻址的版本,不依赖其挂载。
-- 若部署挂上 `dsh-schedule`,可把 job 投递改为走它的 remind 机制,本服务退化为 job 存储层。
+- 本体:官方 schedule 工具的 create/list/delete;到点注入(含 idle 才投、latest-only 单触发)。
+- 薄封装:执行 framing 是否生效(注入 msg source kind = s2s-schedule、内容含执行语义);与官方默认「present」framing 的差异。
 
-## 6. 边界与诚实声明
+## 7. 工作量
 
-- **D5**:多轮自主默认关。触发 = 叫醒目标会话 + 喂一条指令;**执行多深取决于目标会话的自主性配置**——我们保证按时叫醒并给任务,不保证它自动跑完整串活。
-- **进程内 timer**:跨重启靠持久化恢复 `nextAt`(小时级足够)。
-- busy 跳过:宁可少触发一次,不打断正在进行的任务。
-
-## 7. 测试锚点
-
-- `tests/schedule.spec.ts`:创建/列出/取消;到点触发(live-idle→followup、live-busy→跳过并推后、dormant→resume+投递);`every` 推进;`at` 一次删除;重启恢复 `nextAt`。
-
-## 8. 工作量(估算)
-
-1 个新文件(`src/schedule.ts`)+ 工具接入(`tools.ts` 加 1 工具)+ 配置块 + `schedule.spec`(5-6 例)。复用 discovery/lifecycle/broker,最小增量。
+- **引擎**:0(官方)。
+- **执行 framing 薄层**:1 个文件 + 少量配置 + 1-2 个测试;不重造调度器。
+- **部署**:web profile 安装 + `- insert:` 挂载官方 dsh-schedule(部署动作)。
 
