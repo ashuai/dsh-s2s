@@ -7,13 +7,24 @@
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
   "exports": {
-    ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" },
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
-  "files": ["lib", "src", "cordis.patch.yml"],
+  "files": [
+    "lib",
+    "src",
+    "cordis.patch.yml"
+  ],
   "license": "MIT",
-  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
@@ -29,7 +40,10 @@
     "@types/node": "^24.0.0",
     "tsdown": "^0.18.2",
     "typescript": "^5.9.2",
-    "vitest": "^4.0.18"
+    "vitest": "^4.0.18",
+    "@deepseek-ai/dsh-storage": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-storage-sqlite": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-storage-domain": "^0.1.0-rc.6"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && tsdown",
@@ -38,4 +52,3 @@
     "prepare": "pnpm run build"
   }
 }
-
