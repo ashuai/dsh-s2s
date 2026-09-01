@@ -61,13 +61,15 @@ describe('s2s lifecycle', () => {
     expect(await lifecycle.queuedCount('sess-1')).toBe(1)
   })
 
-  it('never resumes an already-live session (mesh delivers)', async () => {
-    const { lifecycle, resume, setLive } = await harness('allow')
+  it('delivers to an already-live session instead of stalling (never re-resumes)', async () => {
+    const { lifecycle, resume, setLive, followups } = await harness('allow')
     setLive(true)
     const outcome = await lifecycle.queueForDormant({ sessionId: 'sess-1', from: 'alice', text: 'hi', msgId: 'm1' })
-    expect(outcome).toBe('queued')
-    expect(resume).not.toHaveBeenCalled()
-    expect(await lifecycle.queuedCount('sess-1')).toBe(1)
+    expect(outcome).toBe('resumed')
+    expect(resume).not.toHaveBeenCalled() // live session: never resume again
+    expect(followups).toHaveLength(1) // delivered to the live idle agent
+    expect(String((followups[0] as { content: { text: string }[] }).content[0]!.text)).toContain('hi')
+    expect(await lifecycle.queuedCount('sess-1')).toBe(0) // no leftover
   })
 
   it('rejects unsafe session ids loud', async () => {

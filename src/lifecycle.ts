@@ -77,8 +77,15 @@ export class S2sLifecycleService extends Service {
     await this.mailbox.enqueue(entry.sessionId, record)
     if (this.config.autoResume !== 'allow') return 'queued'
     // Defensive: a live session must never be resumed again (duplicate
-    // identity is rejected loud by the registry) — the mesh delivers live.
-    if (this.ctx.agents.get(SessionId(entry.sessionId)) !== undefined) return 'queued'
+    // identity is rejected loud by the registry). But a message for an
+    // already-live session (e.g. one a previous s2s resume left live-idle per
+    // OQ-5) must still be delivered — drain the queued mailbox instead of
+    // stalling it. `s2s_resume` routes live sessions here too, so without this
+    // a live target would silently queue with no delivery.
+    if (this.ctx.agents.get(SessionId(entry.sessionId)) !== undefined) {
+      await this.drain(entry.sessionId)
+      return 'resumed'
+    }
     const registry = this.ctx.agents as typeof this.ctx.agents & {
       resume?: (options: { resumeSessionId: string }) => Promise<ResumedHandle>
     }
