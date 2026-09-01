@@ -1,16 +1,20 @@
 /**
- * Session discovery for the s2s seam: enumerate the host's complete session
- * corpus via `ctx.sessionQuery.listSessions()` (the same source the GUI list
- * uses — includes live AND persisted/dormant sessions), read titles via
- * `ctx.sessionQuery.readTitle(sessionId)` (works on live or persisted), and
- * derive live state from the agent registry (`ctx.agents`).
+ * Session discovery for the s2s seam. Primary source:
+ * `ctx.sessionQuery.listSessions()` — the host's complete logical corpus (live
+ * and persisted/dormant), which is what the GUI session list uses — plus
+ * `ctx.sessionQuery.readTitle(sessionId)` for titles (live or persisted) and
+ * `ctx.agents` for live state. Fallback (when the sessionQuery service is
+ * unavailable): scan ${DSH_HOME || ~/.dsh}/sessions for on-disk session dirs.
  * @module dsh-s2s/discovery
  */
+import { readdir, readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import zlib from 'node:zlib'
 import { Service, type Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 
-/** One discovered session with its lifecycle state and current title. */
 export interface S2sSessionInfo {
   readonly sessionId: string
   readonly title?: string
@@ -26,18 +30,14 @@ export type S2sResolveResult =
   | { readonly kind: 'not-found'; readonly name: string; readonly candidates: S2sCandidate[] }
   | { readonly kind: 'ambiguous'; readonly name: string; readonly candidates: S2sCandidate[] }
 
-interface SessionRecordLike {
-  readonly header: { readonly id: unknown; readonly cwd?: string }
-  readonly live: boolean
-}
-
+interface SessionRecordLike { readonly header: { readonly id: unknown; readonly cwd?: string }; readonly live: boolean }
 interface SessionQueryLike {
   listSessions(): Promise<SessionRecordLike[]>
   readTitle(sessionId: unknown): Promise<{ readonly title?: string } | undefined>
 }
 
 export class S2sDiscoveryService extends Service {
-  static inject = ['agents', 'sessionQuery']
+  static inject = ['agents']
 
   constructor(ctx: Context) {
     super(ctx, 's2sDiscovery')
@@ -70,9 +70,16 @@ export class S2sDiscoveryService extends Service {
     return toOk(matches[0]!)
   }
 
-  /** Enumerate the complete corpus (live + persisted) with titles + states. */
+  /** Enumerate the complete corpus: sessionQuery primary, DSH_HOME scan fallback. */
   private async collect(): Promise<S2sSessionInfo[]> {
-    const query = (this.ctx as unknown as { sessionQuery: SessionQueryLike }).sessionQuery
+    const query = (this.ctx as unknown as { sessionQuery?: SessionQueryLike }).sessionQuery
+    if (query !== undefined && typeof query.listSessions === 'function') {
+      try { return await this.collectFromQuery(query) } catch { /* fall through to FS scan */ }
+    }
+    return this.collectFromFs()
+  }
+
+  private async collectFromQuery(query: SessionQueryLike): Promise<S2sSessionInfo[]> {
     const records = await query.listSessions()
     const infos: S2sSessionInfo[] = []
     for (const record of records) {
@@ -85,6 +92,43 @@ export class S2sDiscoveryService extends Service {
     }
     return infos
   }
+
+  private async collectFromFs(): Promise<S2sSessionInfo[]> {
+    const home = process.env.DSH_HOME || process.env.DSH_DATA_DIR
+    const root = home ? join(home, 'sessions') : join(homedir(), '.dsh', 'sessions')
+    const infos: S2sSessionInfo[] = []
+    let level: string[] = []
+    try { level = await readdir(root) } catch { level = [] }
+    for (const workspaceDir of level) {
+      const dir = join(root, workspaceDir)
+      let entries: string[] = []
+      try { entries = await readdir(dir) } catch { continue }
+      for (const entry of entries) {
+        if (!entry.startsWith('session-')) continue
+        const sessionId = entry.slice('session-'.length)
+        if (sessionId.length === 0) continue
+        const agent = this.ctx.agents.get(SessionId(sessionId))
+        const state = agent !== undefined ? (agent.status === 'idle' ? 'live-idle' : 'live-busy') : 'dormant'
+        const title = await this.readTitleFromFs(join(dir, entry))
+        infos.push({ sessionId, ...(title === undefined ? {} : { title }), workspaceDir, state })
+      }
+    }
+    return infos
+  }
+
+  private async readTitleFromFs(sessionDir: string): Promise<string | undefined> {
+    try {
+      const z = await readFile(join(sessionDir, 'session.jsonl.zstd')).catch(() => undefined)
+      if (z !== undefined) {
+        const text = await decompressZstdAll(z)
+        const title = latestTitleFromJsonl(text)
+        if (title !== undefined) return title
+      }
+      const plain = await readFile(join(sessionDir, 'session.jsonl'), 'utf8').catch(() => undefined)
+      if (plain !== undefined) return latestTitleFromJsonl(plain)
+    } catch {}
+    return undefined
+  }
 }
 
 function toCandidate(info: S2sSessionInfo): S2sCandidate {
@@ -93,5 +137,27 @@ function toCandidate(info: S2sSessionInfo): S2sCandidate {
 
 function toOk(info: S2sSessionInfo): S2sResolveResult {
   return { kind: 'ok', sessionId: info.sessionId, ...(info.title === undefined ? {} : { title: info.title }), state: info.state, workspaceDir: info.workspaceDir }
+}
+
+/** Fully decompress a concatenated-zstd log (append-only multi-frame). */
+function decompressZstdAll(buf: Buffer): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    const dec = zlib.createZstdDecompress()
+    dec.on('data', (c: Buffer) => chunks.push(c))
+    dec.on('error', reject)
+    dec.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    dec.end(buf)
+  })
+}
+
+/** Latest `session/title` title over one JSONL log text; undefined if none. */
+function latestTitleFromJsonl(text: string): string | undefined {
+  let title: string | undefined
+  for (const line of text.split('\n')) {
+    if (line.length === 0) continue
+    try { const event = JSON.parse(line) as { type?: string; data?: { title?: unknown } }; if (event.type === 'session/title' && typeof event.data?.title === 'string' && event.data.title.length > 0) title = event.data.title } catch {}
+  }
+  return title
 }
 
