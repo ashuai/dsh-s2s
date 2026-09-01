@@ -80,13 +80,13 @@ export class S2sLifecycleService extends Service {
     // identity is rejected loud by the registry) — the mesh delivers live.
     if (this.ctx.agents.get(SessionId(entry.sessionId)) !== undefined) return 'queued'
     const registry = this.ctx.agents as typeof this.ctx.agents & {
-      resume?: (owner: Context, options: { resumeSessionId: string }) => Promise<ResumedHandle>
+      resume?: (options: { resumeSessionId: string }) => Promise<ResumedHandle>
     }
     if (typeof registry.resume !== 'function') {
       this.ctx.logger.warn('s2s lifecycle: agent registry has no resume capability; message stays queued')
       return 'queued'
     }
-    const handle = await registry.resume(this.ctx, { resumeSessionId: entry.sessionId })
+    const handle = await registry.resume({ resumeSessionId: entry.sessionId })
     this.resumed.set(entry.sessionId, handle)
     await this.drain(entry.sessionId)
     return 'resumed'

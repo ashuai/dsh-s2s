@@ -42,7 +42,7 @@ describe('s2s lifecycle', () => {
     const outcome = await lifecycle.queueForDormant({ sessionId: 'sess-1', from: 'alice', text: 'hello dormant', msgId: 'm1' })
     expect(outcome).toBe('resumed')
     expect(resume).toHaveBeenCalledTimes(1)
-    expect(resume).toHaveBeenCalledWith(expect.anything(), { resumeSessionId: 'sess-1' })
+    expect(resume).toHaveBeenCalledWith({ resumeSessionId: 'sess-1' })
     expect(followups).toHaveLength(1)
     expect(String((followups[0] as { content: { text: string }[] }).content[0]!.text)).toContain('[s2s-lifecycle message]')
     expect(String((followups[0] as { content: { text: string }[] }).content[0]!.text)).toContain('hello dormant')
