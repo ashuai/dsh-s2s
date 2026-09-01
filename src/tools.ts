@@ -164,9 +164,9 @@ export function buildTools(mesh: S2sMeshService, opts: { budget?: S2sBudget; lif
     }),
     defineTool({
       name: 's2s_sessions',
-      description: 'List known sessions with lifecycle state (live-idle / live-busy / dormant). Use s2s_resume to wake a dormant session with a message; never guess session ids.',
+      description: 'List known sessions with lifecycle state (live-idle / live-busy / dormant). Each row shows the session title (the user-facing name), its short id, and state. Use the title (name) as the addr in s2s_resume; never guess session ids.',
       parameters: {
-        query: { type: 'string', description: 'Optional substring filter over session id or workspace directory name.' },
+        query: { type: 'string', description: 'Optional substring filter over session title, session id, or workspace directory name.' },
       },
       output: {
         schema: {
@@ -182,16 +182,17 @@ export function buildTools(mesh: S2sMeshService, opts: { budget?: S2sBudget; lif
         if (sessions.length === 0) return { text: 'No sessions found.' }
         return {
           text: sessions.map(session =>
-            `${session.sessionId}  ${session.state}  ws=${session.workspaceDir}${session.lastActivity === undefined ? '' : `  last=${new Date(session.lastActivity).toISOString()}`}`,
+            `${session.title ?? '(untitled)'}  [${session.sessionId.slice(0, 8)}]  ${session.state}  ws=${session.workspaceDir}${session.lastActivity === undefined ? '' : `  last=${new Date(session.lastActivity).toISOString()}`}`,
           ).join('\n'),
         }
       },
     }),
     defineTool({
       name: 's2s_resume',
-      description: 'Wake a dormant (done) session with one message: the message is queued durably, and when lifecycle autoResume=allow the session is resumed and delivered immediately; with deny it waits in the mailbox. Find session ids with s2s_sessions.',
+      description: 'Wake a dormant (done) session by its NAME (the session title, refreshed live — renames always take effect) or by session_id. The message is queued durably; with lifecycle autoResume=allow the session is resumed and delivered immediately, with deny it waits in the mailbox. List names with s2s_sessions.',
       parameters: {
-        session_id: { type: 'string', required: true, description: 'Target session id from s2s_sessions.' },
+        name: { type: 'string', description: 'The target session title (from s2s_sessions). Primary addressing; user can rename any time. Use session_id to disambiguate a duplicate name.' },
+        session_id: { type: 'string', description: 'Fallback exact session id (when a name is ambiguous).' },
         text: { type: 'string', required: true, description: 'The message text to deliver after the wake.' },
         from: { type: 'string', description: 'Optional sender label shown to the resumed session (defaults to your agent id).' },
       },
@@ -207,19 +208,36 @@ export function buildTools(mesh: S2sMeshService, opts: { budget?: S2sBudget; lif
         if (opts.lifecycle === undefined) {
           return { text: 's2s lifecycle is not configured: add a lifecycle config block to enable waking dormant sessions.' }
         }
-        S2sLifecycleService.assertSafeSessionId(args.session_id)
+        if ((args.name === undefined || args.name.length === 0) && (args.session_id === undefined || args.session_id.length === 0)) {
+          return { text: 'Provide a name (the session title) or a session_id.' }
+        }
+        const resolved = opts.discovery === undefined ? undefined : await opts.discovery.resolve(args.name, args.session_id)
+        if (resolved === undefined) return { text: 's2s discovery unavailable (mesh not mounted).' }
+        if (resolved.kind === 'not-found') {
+          const lines = resolved.candidates.length === 0
+            ? ['No sessions match.']
+            : resolved.candidates.map(c => `- ${c.title ?? '(untitled)'} [${c.sessionId.slice(0, 8)}] ${c.state} ws=${c.workspaceDir}`)
+          return { text: `No session named "${resolved.name}" (renames take effect immediately; list actual names with s2s_sessions).\n${lines.join('\n')}` }
+        }
+        if (resolved.kind === 'ambiguous') {
+          return {
+            text: `Multiple sessions named "${resolved.name}". Disambiguate with session_id:\n${resolved.candidates.map(c => `- ${c.sessionId} (${c.workspaceDir})`).join('\n')}`,
+          }
+        }
+        S2sLifecycleService.assertSafeSessionId(resolved.sessionId)
         const msgId = `wake-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
         const outcome = await opts.lifecycle.queueForDormant({
-          sessionId: args.session_id,
+          sessionId: resolved.sessionId,
           from: args.from ?? String(exec.agent?.id ?? 'unknown'),
           text: args.text,
           msgId,
         })
-        const queued = await opts.lifecycle.queuedCount(args.session_id)
+        const queued = await opts.lifecycle.queuedCount(resolved.sessionId)
+        const label = resolved.title ?? resolved.sessionId
         return {
           text: outcome === 'resumed'
-            ? `Session ${args.session_id} resumed and message delivered (still queued: ${queued}).`
-            : `Session ${args.session_id} is dormant; message queued (${queued} total). Delivery happens when the session is resumed (autoResume=allow) or reopened manually.`,
+            ? `Session "${label}" resumed and message delivered (still queued: ${queued}).`
+            : `Session "${label}" is dormant; message queued (${queued} total). Delivery happens when the session is resumed (autoResume=allow) or reopened manually.`,
         }
       },
     }),

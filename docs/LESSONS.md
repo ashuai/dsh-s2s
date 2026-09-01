@@ -33,6 +33,13 @@
 - 更优雅:进程内 `S2sBroker`(cordis 服务)直取 `ctx.agents.get(目标sessionId)` → `followup/inject` 投递;**零端口**;配合现有 mailbox + `AgentRegistry.resume`。
 - 默认配置 `hub: {}` 已实现 0 端口;broker 可作为下阶段把同宿主路径彻底"去 WS"的设计(见 SOLUTION §R5)。当前测试/线上基线不依赖监听端口。
 
+## L7. name(标题)是主寻址路径,但它是可变用户输入
+
+- 用户**随时可改**会话标题,所以 **name→sessionId 映射必须每次现读**(从 session 日志取最新 `session/title` 事件),**绝不缓存**;改名即刻生效,旧名即查无。
+- name 不是稳定 id:同名会上报 **ambiguous**(必用 `session_id` 精确化),查无上报 **not-found + 候选列表**;永不猜测。
+- sessionId 是稳定地址,仅在歧义/兜底使用;产品语义上用户只认名字。
+- 标题来源:会话日志 `session.jsonl[.zstd]` 的 `session/title` 事件(node 24 的 `zlib.zstdDecompressSync` 解压);无标题事件 = 未命名(列表显示 `(untitled)`)。
+
 ## L6. 环境与锁定
 
 - 验证环境:pnpm 12.1.0 / node 24(macOS arm64);shell 默认 PATH 时常为 `undefined`(显式 `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`)。

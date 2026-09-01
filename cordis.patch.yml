@@ -6,8 +6,9 @@
         mesh:
           project: main
           persistConnections: true
+          autoConnect: false
         lifecycle:
-          autoResume: deny          # conservative default; flip to allow to auto-wake
+          autoResume: allow          # wake dormant sessions on s2s_resume (name/title addressing)
         budget:
           maxHops: 6
           ratePerMinute: 10
