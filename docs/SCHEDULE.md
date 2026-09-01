@@ -4,7 +4,7 @@
 
 ## 0. 一句话
 
-**两条调度面并存、按创建方路由:我们的面 = `S2sScheduleService`(轻量自研,执行语义);官方面 = `@deepseek-ai/dsh-schedule`(官方引擎,提醒语义)。不用 hook/替换官方。**
+**我们的 `s2s_schedule` = `S2sScheduleService`(轻量自研,执行语义),**独立自研、切断官方耦合**;官方 `@deepseek-ai/dsh-schedule` 仅**可选并存**(用它自己的 `schedule_*` 做提醒语义),不是我们的依赖。**
 
 ## 1. 双面架构(creator 路由)
 
