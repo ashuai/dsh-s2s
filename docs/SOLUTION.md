@@ -201,3 +201,34 @@ plugins/dsh-s2s/
 ## 9. 评审请求
 
 已定:D1(更名 dsh-s2s)、D2(s2s_* 工具)。**请重点拍板**:§0.5 的 hybrid 分工(是否采用 @dpskh/a2a 作 live 层)与其 6 项前置检查的执行顺序、D3–D6,以及 §4.4 工具形态;确认后进入 M3(拉起静止 session)或先跑 @dpskh/a2a 检查清单。
+
+---
+
+## 10. 设计修订 R5(已定稿方向):同宿主改走进程内 broker,零端口
+
+> 来源:试运行后评审提出「为什么开这么多 TCP 端口?更优雅的内建消息队列?」——同宿主单进程用上游 hub+WS(跨主机层)属过度设计。
+
+### 10.1 结论
+
+- **上游 @dpskh/a2a 的 hub server + WebSocket 是为跨进程/跨机 DSH mesh 设计**;同宿主两个 session 住在同一进程、共享同一 cordis Context,却绕 hub 监听端口转发,是「用跨主机工具干同进程的活」。
+- **同宿主应该走进程内直投**:
+  - 新增 `S2sBroker`(cordis 服务,注入 [agents]):`send({target: sessionId, ...})` → `ctx.agents.get(SessionId(sessionId))` → `agent.followup/inject`(与 mesh 现有投递同构,但要给 broker 一个「按 sessionId 寻址」的通道)。
+  - 信箱(mailbox)+ `AgentRegistry.resume` 保持不变(静止/离线唯一需要落盘的部分)。
+  - **零 TCP 端口、零 WS、零序列化、零重连/claim**;配现有的防回环预算与授权闸。
+- **生成性影响**:把同宿主路径的「投递」从 `工具→mesh.message→hub client→WS→hub server→WS→deliver→inject` 压成 `工具→broker.send→(agent followup/inject)`。hub 的 registry/history/presence 身份仍以**进程内服务**保留(无监听);仅当将来真要多机互通才开 `hub.server`。
+
+### 10.2 与既有决策的关系
+
+- **D1/D2 不变**;工具面 `s2s_* 5 项` 不变(broker 是 delivery 层替换,不是工具形态变更)。
+- **D3/D5/D6 不变**(队列决策、默认多轮关、授权闸)——broker 只换投递介质。
+- **上游协议 v3 / hub 层保留为可选跨机扩展**;本 fork 默认以进程内投递为主。
+
+### 10.3 验证锚点
+
+- 全链路在**隔离 profile/test**(新端口+全新 storages)先行;凭证同 L3/L4。
+- broker 单测:直投(空闲/忙碌)、dormant→信箱、allow→resume+投递、防双开。
+
+### 10.4 现状
+
+- 当前已上线的**默认配置已实现 0 端口**(`hub: {}`);broker 作为下一阶段把同宿主路径彻底去 WS 的重构,先写设计、后实现,再走隔离测试再上 web。
+
