@@ -2,7 +2,7 @@
 
 > 一个 cordis 插件,让**同一台宿主上的多个 DSH session 互相对话**——按**会话名(标题)**点名即可,并支持**拉起已结束(静止)的 session**。
 
-**实现思路受 [`@dpskh/a2a`](https://github.com/dpskh/dsh-a2a) 启发,但并非其 fork**:a2a 是跨主机 mesh(hub + WebSocket + presence);而 s2s 是**同宿主单进程**路径,因此**不继承其 hub/网络层**,只借鉴了它的**注入习语**(空闲→`followup`、忙碌→`inject`)。s2s 用一个**进程内 broker** 直接投递,**零 TCP 端口、零 WS、零重连**。原 a2a 版实现归档在本仓库历史与 `legacy-a2a` 分支,作参照。
+**实现思路受 a2a 启发,但并非其 fork**:a2a 是跨主机 mesh(hub + WebSocket + presence);而 s2s 是**同宿主单进程**路径,因此**不继承其 hub/网络层**,只借鉴了它的**注入习语**(空闲→`followup`、忙碌→`inject`)。s2s 用一个**进程内 broker** 直接投递,**零 TCP 端口、零 WS、零重连**。原 a2a 版实现归档在本仓库历史与 `legacy-a2a` 分支,作参照。
 
 > 使用手册见 [docs/USAGE.md](docs/USAGE.md);踩坑记录在本机 `plugins/LESSONS.md`(不进仓库);设计证据稿见 [docs/SOLUTION.md](docs/SOLUTION.md)(v0.2 历史基线)。
 
@@ -10,7 +10,7 @@
 
 ## 它是什么 / 不是什么
 
-| | s2s(本项目) | 上游 @dpskh/a2a |
+| | s2s(本项目) | a2a |
 |---|---|---|
 | 拓扑 | **同宿主/单进程** | 跨进程/跨机(可信局域网) |
 | 传输 | **进程内 broker 直投,零端口** | hub server + WebSocket |
@@ -48,10 +48,10 @@
 
 零端口:无需配 hub/server(那已是跨机 a2a 的事)。
 
-## 与上游 a2a 的关系
+## 与 a2a 的关系
 
 - **非 fork**:同宿主场景独立实现(进程内 broker),不继承 a2a 的 hub/WS 层;仅借鉴其**注入习语**与错误编码风格。
-- 若需要**跨进程/跨机** DSH mesh,请直接用上游 [`@dpskh/a2a`](https://github.com/dpskh/dsh-a2a)——那是它的主场。
+- 若需要**跨进程/跨机** DSH mesh,请直接用 a2a——那是它的主场。
 - 非 DSH 的标准 A2A agent(AgentCard/JSON-RPC)需网关类插件,本包不提供。
 
 ## 路线图
@@ -70,5 +70,5 @@ pnpm run build         # 产出 lib/index.js (~28kB)
 
 ## License
 
-MIT。注入习语受 [`@dpskh/a2a`](https://github.com/dpskh/dsh-a2a)(MIT)启发;本实现独立成文。
+MIT。注入习语受 a2a(MIT)启发;本实现独立成文。
 
