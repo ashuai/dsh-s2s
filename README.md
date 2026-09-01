@@ -4,7 +4,7 @@
 
 **实现思路受 a2a 启发,但并非其 fork**:a2a 是跨主机 mesh(hub + WebSocket + presence);而 s2s 是**同宿主单进程**路径,因此**不继承其 hub/网络层**,只借鉴了它的**注入习语**(空闲→`followup`、忙碌→`inject`)。s2s 用一个**进程内 broker** 直接投递,**零 TCP 端口、零 WS、零重连**。原 a2a 版实现归档在本仓库历史与 `legacy-a2a` 分支,作参照。(跨进程/跨机 mesh 请直接用 a2a;非 DSH 标准 A2A agent 需网关类插件。)
 
-> 使用手册见 [docs/USAGE.md](docs/USAGE.md);设计证据稿见 [docs/SOLUTION.md](docs/SOLUTION.md)(v0.2 历史基线)。
+> 使用手册见 [docs/USAGE.md](docs/USAGE.md);场景与最佳实践见 [docs/BEST_PRACTICES.md](docs/BEST_PRACTICES.md);设计证据稿见 [docs/SOLUTION.md](docs/SOLUTION.md)(v0.2 历史基线)。
 
 ---
 
