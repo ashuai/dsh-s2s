@@ -40,8 +40,11 @@ export type S2sResolveResult =
   | { readonly kind: 'not-found'; readonly name: string; readonly candidates: S2sCandidate[] }
   | { readonly kind: 'ambiguous'; readonly name: string; readonly candidates: S2sCandidate[] }
 
-/** Default on-disk session store root. */
-export const DEFAULT_SESSIONS_ROOT = join(homedir(), '.dsh', 'sessions')
+/** Default on-disk session store root: DSH_HOME/DSH_DATA env, else ~/.dsh/sessions. */
+export const DEFAULT_SESSIONS_ROOT = (() => {
+  const env = process.env.DSH_HOME || process.env.DSH_DATA_DIR
+  return env ? join(env, 'sessions') : join(homedir(), '.dsh', 'sessions')
+})()
 
 /**
  * The discovery service. Mounted alongside the mesh; reads the live registry

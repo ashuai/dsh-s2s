@@ -37,6 +37,8 @@ export const inject: string[] = []
 export interface Config {
   readonly lifecycle?: { enabled?: boolean; autoResume?: string; mailboxDir?: string }
   readonly budget?: BudgetConfig
+  /** On-disk session store root; default ~/.dsh/sessions (or DSH_HOME/sessions). */
+  readonly sessionsRoot?: string
 }
 
 /**
@@ -45,7 +47,7 @@ export interface Config {
  */
 export function apply(ctx: Context, config: Config): void {
   ctx.plugin(S2sBroker)
-  ctx.plugin(S2sDiscoveryService)
+  ctx.plugin(S2sDiscoveryService, config.sessionsRoot === undefined ? undefined : { sessionsRoot: config.sessionsRoot })
   if (config.lifecycle !== undefined) {
     ctx.plugin(S2sLifecycleService, {
       ...(config.lifecycle.enabled === undefined ? {} : { enabled: config.lifecycle.enabled }),
