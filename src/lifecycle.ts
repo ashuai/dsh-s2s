@@ -11,7 +11,7 @@
  */
 
 import { Service, type Context } from '@deepseek-ai/cordis'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import { installModelSelection, type Agent, type ModelSelection } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { S2sError } from './error.ts'
@@ -87,9 +87,45 @@ export class S2sLifecycleService extends Service {
       return 'queued'
     }
     const handle = await registry.resume({ resumeSessionId: entry.sessionId })
+    // A dormant resume bypasses the host's (apiproxy) preset setup, which is
+    // where the Agent-scoped model-selection hooks are installed for live
+    // agents. Without them a persona referencing `{{model}}` (e.g. the shared
+    // `deployment:persona`) fails prompt assembly with an unbound prompt
+    // variable. Mirror the host so the resumed session binds the model it
+    // last ran with.
+    this.installResumedSelection(handle.agent)
     this.resumed.set(entry.sessionId, handle)
     await this.drain(entry.sessionId)
     return 'resumed'
+  }
+
+  /**
+   * Install the Agent-scoped model-selection hooks that the web host installs
+   * during preset setup (which a dormant resume via `AgentRegistry.resume`
+   * skips). The hooks bind `{{model}}`/`{{provider}}` for the resumed session
+   * from the model it last ran with, so a persona template that references
+   * them assembles instead of throwing `has no value`.
+   * @see {@link installModelSelection} (the host's `selectionFor` mirrors this)
+   */
+  private installResumedSelection(agent: Agent): void {
+    let picked: ModelSelection | undefined
+    const selection = {
+      get current() {
+        if (picked !== undefined) return picked
+        const logged = agent.session.requestHeader()?.config
+        if (logged === undefined) return undefined
+        return {
+          provider: logged.provider,
+          model: logged.model,
+          ...(logged.reasoningEffort === undefined ? {} : { reasoningEffort: logged.reasoningEffort }),
+        }
+      },
+      set current(next: ModelSelection | undefined) {
+        picked = next
+      },
+      assembled: undefined,
+    }
+    installModelSelection(agent.ctx, selection)
   }
 
   /**

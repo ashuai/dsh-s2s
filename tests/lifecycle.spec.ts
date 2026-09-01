@@ -19,6 +19,10 @@ async function harness(autoResume: 'allow' | 'deny') {
   const agent = {
     id: 'sess-1',
     status: 'idle',
+    // The lifecycle installs agent-scoped model selection on resume; give the
+    // fake the minimal session + scoped ctx that path touches.
+    session: { requestHeader: () => undefined },
+    ctx: new Context(),
     followup: (message: unknown) => { followups.push(message) },
     inject: (message: unknown) => { injections.push(message) },
   }
