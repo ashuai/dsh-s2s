@@ -12,6 +12,7 @@ import { S2sBroker } from './broker.ts'
 import { S2sDiscoveryService } from './discovery.ts'
 import { S2sLifecycleService, type LifecycleConfig } from './lifecycle.ts'
 import { S2sBudget, type BudgetConfig } from './budget.ts'
+import { S2sScheduleService, type ScheduleConfig } from './schedule.ts'
 import * as toolsPlugin from './tools.ts'
 
 export { S2sError } from './error.ts'
@@ -26,6 +27,8 @@ export { S2sMailbox } from './mailbox.ts'
 export type { MailboxEntry } from './mailbox.ts'
 export { S2sBudget } from './budget.ts'
 export type { BudgetConfig } from './budget.ts'
+export { S2sScheduleService } from './schedule.ts'
+export type { ScheduleConfig } from './schedule.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'dsh-s2s'
@@ -37,6 +40,7 @@ export const inject: string[] = []
 export interface Config {
   readonly lifecycle?: { enabled?: boolean; autoResume?: string; mailboxDir?: string }
   readonly budget?: BudgetConfig
+  readonly schedule?: ScheduleConfig
 }
 
 /**
@@ -55,6 +59,9 @@ export function apply(ctx: Context, config: Config): void {
   }
   if (config.budget !== undefined) {
     ctx.provide('s2sBudget', new S2sBudget(config.budget))
+  }
+  if (config.schedule !== undefined) {
+    ctx.plugin(S2sScheduleService, config.schedule)
   }
   ctx.plugin(toolsPlugin)
 }

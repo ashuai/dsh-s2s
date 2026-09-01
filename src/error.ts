@@ -13,6 +13,7 @@ export type S2sErrorCode =
   | 'S2S_BUDGET_EXCEEDED'
   | 'S2S_BUDGET_RATE'
   | 'S2S_INVALID_MESSAGE'
+  | 'S2S_SCHEDULE'
 
 export class S2sError extends HarnessError {
   override readonly code: S2sErrorCode

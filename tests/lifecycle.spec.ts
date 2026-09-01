@@ -76,4 +76,15 @@ describe('s2s lifecycle', () => {
     const { lifecycle } = await harness('deny')
     await expect(lifecycle.queueForDormant({ sessionId: '../evil', from: 'a', text: 't', msgId: 'm' })).rejects.toThrow(/unsafe/)
   })
+
+  it('queues when the agent registry has no resume capability', async () => {
+    const mailboxDir = await mkdtemp(join(tmpdir(), 's2s-life-'))
+    dirs.push(mailboxDir)
+    const ctx = new Context()
+    ctx.provide('agents', { get: () => undefined } as never) // no resume
+    await ctx.plugin(s2sApply, { lifecycle: { autoResume: 'allow', mailboxDir } })
+    const lifecycle = ctx.get('s2sLifecycle') as S2sLifecycleService
+    const outcome = await lifecycle.queueForDormant({ sessionId: 'sess-1', from: 'alice', text: 'x', msgId: 'm' })
+    expect(outcome).toBe('queued')
+  })
 })

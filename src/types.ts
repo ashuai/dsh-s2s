@@ -8,6 +8,7 @@ declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     s2s: { kind: 's2s'; msgId: string }
     's2s-lifecycle': { kind: 's2s-lifecycle'; msgId: string }
+    's2s-schedule': { kind: 's2s-schedule'; jobId: string }
   }
 }
 

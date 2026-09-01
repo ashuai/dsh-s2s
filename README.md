@@ -24,7 +24,7 @@
 - **进程内投递**:`S2sBroker.deliver(sessionId, {from,text})` → `ctx.agents.get(...)` → `agent.followup`(空闲)/`inject`(忙碌)。零网络、零序列化。
 - **name 主寻址**:`s2s_resume(name: "开发", ...)` / `s2s_message(name: "产品", ...)`;每次解析**现读会话最新标题**(日志 `session/title` 事件),改名即刻生效;同名→`ambiguous`(用 `session_id` 消歧),查无→`not-found`+候选。
 - **拉起静止会话**:入信箱 → `autoResume=allow` 时 `AgentRegistry.resume` 拉起 → 投递;拉起的会话保留 live-idle(不自动归眠)。
-- **5 个模型工具**:`s2s_peers`(live)/ `s2s_sessions`(全部+标题+三态)/ `s2s_message`(发/唤醒)/ `s2s_resume`(显式唤醒)/ `s2s_history`(进程作用域历史)。
+- **6 个模型工具**:`s2s_peers`(live)/ `s2s_sessions`(全部+标题+三态)/ `s2s_message`(发/唤醒)/ `s2s_resume`(显式唤醒)/ `s2s_history`(进程作用域历史)/ `s2s_schedule`(会话内定时注入)。
 - **持久信箱**:`~/.dsh/s2s/mailboxes/<sessionId>/*.json`,原子写、时序命名、损坏自愈。
 - **按需加载**:`lifecycle`/`budget` 配置块缺席即不挂载;broker/discovery/tools 恒挂(核心)。
 
@@ -54,7 +54,7 @@
 - ✅ **name 主寻址(R2)**:按会话标题点名,现读不缓存;同名/查无显式处理。
 - ✅ **静态会话拉起(R2)**:`AgentRegistry.resume` 拉起 + 信箱 + drain + 防双开。
 - ✅ **预算(R3 部分)**:发送侧 hop/限速。
-- 🔲 **待做**:会话内定时唤醒 `s2s_schedule`(每 N / 定点拉起)——设计见 [docs/SCHEDULE.md](docs/SCHEDULE.md)。
+- ✅ **会话内定时唤醒(R4)**:`s2s_schedule`(每 N / 定点拉起,到点 idle 才注入 / busy 推后 / dormant 交 s2s)。设计见 [docs/SCHEDULE.md](docs/SCHEDULE.md)。
 - 🔲 **待做**:`s2s-etiquette` skill(何时找谁、礼节与汇报规范)。
 - 🔲 **待做**:历史/信箱持久化强度调优;真实 GUI 端到端体验。
 - 🔲 **可选项**:与外部标准 A2A agent 互通(需独立网关,本包不做)。

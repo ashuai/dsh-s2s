@@ -19,7 +19,7 @@ describe('s2s composition', () => {
     const { ctx, registered } = await harness()
     expect(ctx.get('s2sBroker')).toBeDefined()
     expect(ctx.get('s2sDiscovery')).toBeDefined()
-    expect(registered.map(t => t.name)).toEqual(['s2s_peers', 's2s_sessions', 's2s_message', 's2s_resume', 's2s_history'])
+    expect(registered.map(t => t.name)).toEqual(['s2s_peers', 's2s_sessions', 's2s_message', 's2s_resume', 's2s_history', 's2s_schedule'])
     await ctx.fiber.dispose()
   })
 })

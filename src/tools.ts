@@ -11,6 +11,7 @@ import type { S2sBroker } from './broker.ts'
 import type { S2sDiscoveryService, S2sResolveResult } from './discovery.ts'
 import { S2sLifecycleService } from './lifecycle.ts'
 import type { S2sBudget } from './budget.ts'
+import type { S2sScheduleService } from './schedule.ts'
 
 function textRender(_args: object, value: { text: string }): ContentBlock[] {
   return [{ type: 'text', text: value.text }]
@@ -37,8 +38,8 @@ function displayResolve(resolved: Extract<S2sResolveResult, { kind: 'not-found' 
   return 'Multiple sessions named "' + resolved.name + '". Disambiguate with session_id:\n' + resolved.candidates.map(function(c) { return '- ' + c.sessionId + ' (' + c.workspaceDir + ')' }).join('\n')
 }
 
-export function buildTools(deps: { broker: S2sBroker; discovery: S2sDiscoveryService; lifecycle?: S2sLifecycleService; budget?: S2sBudget }): ToolDefinition[] {
-  const broker = deps.broker, discovery = deps.discovery, lifecycle = deps.lifecycle, budget = deps.budget
+export function buildTools(deps: { broker: S2sBroker; discovery: S2sDiscoveryService; lifecycle?: S2sLifecycleService; budget?: S2sBudget; schedule?: S2sScheduleService }): ToolDefinition[] {
+  const broker = deps.broker, discovery = deps.discovery, lifecycle = deps.lifecycle, budget = deps.budget, schedule = deps.schedule
   const resolve = async function(name: string | undefined, sessionId: string | undefined): Promise<S2sResolveResult | { kind: 'err'; reason: string }> {
     if ((name === undefined || name.length === 0) && (sessionId === undefined || sessionId.length === 0)) {
       return { kind: 'err', reason: 'Provide a name (the session title) or a session_id.' }
@@ -137,6 +138,45 @@ export function buildTools(deps: { broker: S2sBroker; discovery: S2sDiscoverySer
         return { text: records.map(function(r) { return '[' + new Date(r.createdAt).toISOString() + '] ' + r.from + ' -> ' + r.text }).join('\n') }
       },
     }),
+    defineTool({
+      name: 's2s_schedule',
+      description: 'Schedule a prompt to be injected into a session on a timer. action=list lists jobs; create (every_seconds periodic, or at_iso one-shot) schedules; cancel (job_id) removes one.',
+      parameters: {
+        action: { type: 'string', required: true, description: 'list | create | cancel' },
+        text: { type: 'string', description: 'Prompt text to inject (create).' },
+        every_seconds: { type: 'number', description: 'Periodic interval in seconds (create); <300 collapses to a one-shot at now+interval.' },
+        at_iso: { type: 'string', description: 'One-shot ISO instant (create).' },
+        session_id: { type: 'string', description: 'Target session (default: this session).' },
+        job_id: { type: 'string', description: 'Job id to cancel.' },
+      },
+      output: OUTPUT,
+      execute: async function(args, exec) {
+        if (schedule === undefined) return { text: 's2s schedule is not configured: add a schedule config block to enable scheduled injection.' }
+        if (args.action === 'list') {
+          const jobs = await schedule.list()
+          if (jobs.length === 0) return { text: 'No scheduled jobs.' }
+          return { text: jobs.map(function(j) { return '- ' + j.id + ' [' + j.targetSessionId.slice(0, 8) + '] ' + (j.everySeconds !== undefined ? 'every ' + j.everySeconds + 's' : 'at ' + (j.atIso ?? '')) + (j.enabled ? '' : ' (disabled)') }).join('\n') }
+        }
+        if (args.action === 'create') {
+          if (args.text === undefined || args.text.length === 0) return { text: 'create needs a text.' }
+          const target = args.session_id ?? String(exec.agent?.id ?? '')
+          if (target.length === 0) return { text: 'create needs a session_id (or run from a session).' }
+          const job = await schedule.create({
+            targetSessionId: target,
+            text: args.text,
+            ...(args.every_seconds === undefined ? {} : { everySeconds: args.every_seconds }),
+            ...(args.at_iso === undefined ? {} : { atIso: args.at_iso }),
+          })
+          return { text: 'Scheduled ' + job.id + ' -> ' + target + ' ' + (job.everySeconds !== undefined ? 'every ' + job.everySeconds + 's' : 'at ' + (job.atIso ?? '')) + '.' }
+        }
+        if (args.action === 'cancel') {
+          if (args.job_id === undefined || args.job_id.length === 0) return { text: 'cancel needs a job_id.' }
+          const ok = await schedule.cancel(args.job_id)
+          return { text: ok ? 'Cancelled ' + args.job_id + '.' : 'No job ' + args.job_id + '.' }
+        }
+        return { text: 'action must be list | create | cancel.' }
+      },
+    }),
   ]
 }
 
@@ -151,7 +191,8 @@ export function apply(ctx: Context): void {
   const discovery = ctx.get('s2sDiscovery') as S2sDiscoveryService
   const lifecycle = ctx.get('s2sLifecycle') as S2sLifecycleService | undefined
   const budget = ctx.get('s2sBudget') as S2sBudget | undefined
-  const disposers = buildTools({ broker: broker, discovery: discovery, ...(lifecycle === undefined ? {} : { lifecycle: lifecycle }), ...(budget === undefined ? {} : { budget: budget }) }).map(function(d) { return tools.register(d) })
+  const schedule = ctx.get('s2sSchedule') as S2sScheduleService | undefined
+  const disposers = buildTools({ broker: broker, discovery: discovery, ...(lifecycle === undefined ? {} : { lifecycle: lifecycle }), ...(budget === undefined ? {} : { budget: budget }), ...(schedule === undefined ? {} : { schedule: schedule }) }).map(function(d) { return tools.register(d) })
   ctx.effect(function() { return function() { for (const d of disposers) d() } }, 's2s-tools.disposers')
 }
 

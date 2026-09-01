@@ -33,8 +33,21 @@ describe('s2s broker', () => {
     expect(hist[0]!.text).toBe('hello')
   })
 
-  it('rejects unsafe session ids loud', async () => {
-    expect(() => S2sBroker.assertSafeSessionId('../x')).toThrow()
+  it('formats replyTo and trims history beyond the internal limit', async () => {
+    const ctx = new Context()
+    const agent = fakeAgent('idle')
+    ctx.provide('agents', { get: (id: unknown) => String(id) === 's' ? agent : undefined } as never)
+    await ctx.plugin(S2sBroker)
+    const broker = ctx.get('s2sBroker') as S2sBroker
+    broker.deliver('s', { from: 'a', text: 'x', msgId: 'm1', replyTo: 'c-1' })
+    const msg = (agent as any).followup.mock.calls[0][0]
+    expect(String(msg.content[0].text)).toContain('replyTo=c-1')
+    for (let i = 0; i < 210; i += 1) broker.deliver('s', { from: 'a', text: 't' + i, msgId: 'g' + i })
+    expect(broker.history('s', { limit: 1000 })).toHaveLength(200)
+  })
+
+  it('accepts a safe session id', () => {
+    expect(() => S2sBroker.assertSafeSessionId('sess-1')).not.toThrow()
   })
 })
 

@@ -11,7 +11,7 @@ describe('s2s tools', () => {
     ctx.provide('s2sBroker', { deliver: vi.fn(), history: vi.fn(() => []) } as never)
     ctx.provide('s2sDiscovery', { list: async () => [], resolve: async () => ({ kind: 'not-found', name: 'x', candidates: [] }) } as never)
     await ctx.plugin(toolsApply)
-    expect(registered.map(t => t.name)).toEqual(['s2s_peers', 's2s_sessions', 's2s_message', 's2s_resume', 's2s_history'])
+    expect(registered.map(t => t.name)).toEqual(['s2s_peers', 's2s_sessions', 's2s_message', 's2s_resume', 's2s_history', 's2s_schedule'])
     await ctx.fiber.dispose()
     expect(disposer).toHaveBeenCalled()
   })
