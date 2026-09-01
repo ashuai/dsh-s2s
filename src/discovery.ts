@@ -37,10 +37,17 @@ interface SessionQueryLike {
 }
 
 export class S2sDiscoveryService extends Service {
+  private queryService?: SessionQueryLike
+  private readonly sessionsRoot: string | undefined
   static inject = ['agents']
 
-  constructor(ctx: Context) {
+  constructor(ctx: Context, config?: { sessionsRoot?: string }) {
     super(ctx, 's2sDiscovery')
+    this.sessionsRoot = config?.sessionsRoot
+    // Optional dependency: bind only when the sessionQuery service exists.
+    ctx.inject(['sessionQuery'], (sctx) => {
+      this.queryService = (sctx as unknown as { sessionQuery: SessionQueryLike }).sessionQuery
+    })
   }
 
   liveAgent(sessionId: string): Agent | undefined {
@@ -72,7 +79,7 @@ export class S2sDiscoveryService extends Service {
 
   /** Enumerate the complete corpus: sessionQuery primary, DSH_HOME scan fallback. */
   private async collect(): Promise<S2sSessionInfo[]> {
-    const query = (this.ctx as unknown as { sessionQuery?: SessionQueryLike }).sessionQuery
+    const query = this.queryService
     if (query !== undefined && typeof query.listSessions === 'function') {
       try { return await this.collectFromQuery(query) } catch { /* fall through to FS scan */ }
     }
@@ -95,7 +102,7 @@ export class S2sDiscoveryService extends Service {
 
   private async collectFromFs(): Promise<S2sSessionInfo[]> {
     const home = process.env.DSH_HOME || process.env.DSH_DATA_DIR
-    const root = home ? join(home, 'sessions') : join(homedir(), '.dsh', 'sessions')
+    const root = this.sessionsRoot ?? (home ? join(home, 'sessions') : join(homedir(), '.dsh', 'sessions'))
     const infos: S2sSessionInfo[] = []
     let level: string[] = []
     try { level = await readdir(root) } catch { level = [] }
