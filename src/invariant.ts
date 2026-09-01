@@ -7,7 +7,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { InvariantFailure, InvariantInstaller } from '@deepseek-ai/dsh-invariants'
 
-const PACKAGE_NAME = '@dpskh/a2a'
+const PACKAGE_NAME = 'dsh-s2s'
 
 /** Cordis companion plugin name. */
 export const name = 's2s-invariant'

@@ -95,7 +95,7 @@ export async function materializeAttachments(
   attachments: readonly { name: string; bytes: Buffer }[],
 ): Promise<S2sAttachmentReference[]> {
   if (attachments.length === 0) return []
-  const root = path.join(tmpdir(), 'dsh-a2a', project, messageRef)
+  const root = path.join(tmpdir(), 'dsh-s2s', project, messageRef)
   await mkdir(root, { recursive: true })
   const realRoot = await realpath(root)
   const outputDirectory = await mkdtemp(path.join(realRoot, 'attach-'))
