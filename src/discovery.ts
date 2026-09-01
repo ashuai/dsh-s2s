@@ -1,9 +1,9 @@
 /**
- * Session discovery for the s2s seam: enumerate the sessions the host knows
- * about — the same live store the GUI lists (`ctx.sessions.list()`) — and read
- * titles via the session-title service (`ctx.sessionTitle.get(session)`), so
- * `s2s_sessions` matches what the user sees. Live state comes from the agent
- * registry (`ctx.agents.get(id)`); a known-but-not-live session is dormant.
+ * Session discovery for the s2s seam: enumerate the host's complete session
+ * corpus via `ctx.sessionQuery.listSessions()` (the same source the GUI list
+ * uses — includes live AND persisted/dormant sessions), read titles via
+ * `ctx.sessionQuery.readTitle(sessionId)` (works on live or persisted), and
+ * derive live state from the agent registry (`ctx.agents`).
  * @module dsh-s2s/discovery
  */
 import { Service, type Context } from '@deepseek-ai/cordis'
@@ -26,43 +26,38 @@ export type S2sResolveResult =
   | { readonly kind: 'not-found'; readonly name: string; readonly candidates: S2sCandidate[] }
   | { readonly kind: 'ambiguous'; readonly name: string; readonly candidates: S2sCandidate[] }
 
-interface SessionLike {
-  readonly id: unknown
-  readonly header?: { readonly cwd?: string }
+interface SessionRecordLike {
+  readonly header: { readonly id: unknown; readonly cwd?: string }
+  readonly live: boolean
 }
 
-interface TitleLike {
-  get(session: SessionLike): { readonly title?: string } | undefined
+interface SessionQueryLike {
+  listSessions(): Promise<SessionRecordLike[]>
+  readTitle(sessionId: unknown): Promise<{ readonly title?: string } | undefined>
 }
 
-/**
- * The discovery service. Mounted alongside the mesh; reads the live session
- * store through the injected session service, titles through the session-title
- * service (optional), and liveness through the agent registry.
- */
 export class S2sDiscoveryService extends Service {
-  static inject = ['agents', 'sessions']
+  static inject = ['agents', 'sessionQuery']
 
   constructor(ctx: Context) {
     super(ctx, 's2sDiscovery')
   }
 
-  /** The live agent for one session id, when registered. */
   liveAgent(sessionId: string): Agent | undefined {
     return this.ctx.agents.get(SessionId(sessionId))
   }
 
   async list(query?: string): Promise<S2sSessionInfo[]> {
     const needle = query?.toLowerCase()
-    const infos = this.collect()
+    const infos = await this.collect()
     const filtered = needle === undefined
       ? infos
       : infos.filter(info => info.title?.toLowerCase().includes(needle) || info.sessionId.toLowerCase().includes(needle) || info.workspaceDir.toLowerCase().includes(needle))
-    return filtered.sort((a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0))
+    return filtered
   }
 
   async resolve(name: string | undefined, sessionId: string | undefined): Promise<S2sResolveResult> {
-    const infos = this.collect()
+    const infos = await this.collect()
     if (sessionId !== undefined && sessionId.length > 0) {
       const exact = infos.find(info => info.sessionId === sessionId)
       if (exact !== undefined) return toOk(exact)
@@ -75,17 +70,18 @@ export class S2sDiscoveryService extends Service {
     return toOk(matches[0]!)
   }
 
-  /** Enumerate the live session store (same source as the GUI list). */
-  private collect(): S2sSessionInfo[] {
-    const sessions = this.ctx.sessions.list() as unknown as SessionLike[]
-    const titleService = (this.ctx as unknown as { get(key: string): TitleLike | undefined }).get('sessionTitle')
+  /** Enumerate the complete corpus (live + persisted) with titles + states. */
+  private async collect(): Promise<S2sSessionInfo[]> {
+    const query = (this.ctx as unknown as { sessionQuery: SessionQueryLike }).sessionQuery
+    const records = await query.listSessions()
     const infos: S2sSessionInfo[] = []
-    for (const session of sessions) {
-      const sessionId = String(session.id)
+    for (const record of records) {
+      const sessionId = String(record.header.id)
       const agent = this.ctx.agents.get(SessionId(sessionId))
-      const state = agent === undefined ? 'dormant' : agent.status === 'idle' ? 'live-idle' : 'live-busy'
-      const title = titleService?.get(session)?.title
-      infos.push({ sessionId, ...(title === undefined ? {} : { title }), workspaceDir: session.header?.cwd ?? '?', state })
+      const state = agent !== undefined ? (agent.status === 'idle' ? 'live-idle' : 'live-busy') : 'dormant'
+      let title: string | undefined
+      try { title = (await query.readTitle(SessionId(sessionId)))?.title } catch { title = undefined }
+      infos.push({ sessionId, ...(title === undefined ? {} : { title }), workspaceDir: record.header.cwd ?? '?', state })
     }
     return infos
   }

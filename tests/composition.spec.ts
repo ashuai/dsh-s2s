@@ -9,6 +9,7 @@ async function harness() {
   const agent = { id: 'sess-1', status: 'idle', followup: vi.fn(), inject: vi.fn() }
   ctx.provide('agents', { get: (id: unknown) => String(id) === 'sess-1' ? agent : undefined } as never)
   ctx.provide('sessions', { list: () => [] } as never)
+  ctx.provide('sessionQuery', { listSessions: async () => [], readTitle: async () => undefined } as never)
   await ctx.plugin(s2sApply, { lifecycle: { autoResume: 'deny' } })
   return { ctx, registered, agent }
 }
