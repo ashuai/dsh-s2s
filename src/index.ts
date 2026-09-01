@@ -18,7 +18,7 @@ export { S2sError } from './error.ts'
 export type { S2sErrorCode } from './error.ts'
 export { S2sBroker } from './broker.ts'
 export type { S2sDeliverInput, S2sBrokerRecord, S2sDeliverState } from './broker.ts'
-export { S2sDiscoveryService, DEFAULT_SESSIONS_ROOT } from './discovery.ts'
+export { S2sDiscoveryService } from './discovery.ts'
 export type { S2sSessionInfo, S2sResolveResult } from './discovery.ts'
 export { S2sLifecycleService } from './lifecycle.ts'
 export type { LifecycleConfig } from './lifecycle.ts'
@@ -37,8 +37,6 @@ export const inject: string[] = []
 export interface Config {
   readonly lifecycle?: { enabled?: boolean; autoResume?: string; mailboxDir?: string }
   readonly budget?: BudgetConfig
-  /** On-disk session store root; default ~/.dsh/sessions (or DSH_HOME/sessions). */
-  readonly sessionsRoot?: string
 }
 
 /**
@@ -47,7 +45,7 @@ export interface Config {
  */
 export function apply(ctx: Context, config: Config): void {
   ctx.plugin(S2sBroker)
-  ctx.plugin(S2sDiscoveryService, config.sessionsRoot === undefined ? undefined : { sessionsRoot: config.sessionsRoot })
+  ctx.plugin(S2sDiscoveryService)
   if (config.lifecycle !== undefined) {
     ctx.plugin(S2sLifecycleService, {
       ...(config.lifecycle.enabled === undefined ? {} : { enabled: config.lifecycle.enabled }),
