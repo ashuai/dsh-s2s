@@ -1,8 +1,8 @@
 # dsh-s2s — Session-to-Session 同宿主会话互联 · 解决方案(v0.2,供评审)
 
-> 状态:**设计稿,未写任何代码**。评审通过后按 §6 里程碑实施。
-> v0.2 变更:① 按用户提议更名 **dsh-a2a → dsh-s2s**(理由见 D1);② 新增 §0.5——对第三方插件 `@dpskh/a2a` 的评估结论与分工方案(hybrid)。
-> 证据基础:对已安装 DSH `0.1.1-rc.2` 发布包(`~/.bun/install/global/node_modules/@deepseek-ai/*`)的类型面与文档逐一核对;每条结论标注【已验证】/【待验证】。
+> **文档定位:本文件是 v0.2 的设计/证据稿(历史基线)**。设计与证据核对结论仍有效,但其中「未写任何代码」「评审后实施」等表述已过时——**实现已完成**,现行状态、功能、用法与挂载方式以 [README](../README.md) 与 [docs/USAGE.md](USAGE.md) 为准。
+> v0.2 变更:① 更名 **dsh-a2a → dsh-s2s**(理由见 D1);② 新增 §0.5 对第三方插件 `@dpskh/a2a` 的评估结论与分工方案(hybrid)。
+> 证据基础:对本机已安装 DSH 发布包(全局 node_modules 下的 `@deepseek-ai/*`)的类型面与文档逐一核对;每条结论标注【已验证】/【待验证】——**其中的路径/端口/本机插件名仅在证据核对时成立,不构成可移植结论**。
 
 ---
 
@@ -36,7 +36,7 @@
 2. **本插件收窄为 delta**:`s2s_resume`/拉起静止 session + mailbox + 授权闸(M3 升为主线);礼仪 skill(M4)。
 3. 可选增强:resume 后的会话经其 `persistConnections` 自动回归 presence,信件改走 mesh 投递,两套注入器对齐。
 
-**采用前置检查(6 项)**:① 源码审查(它持 `ctx.agents`/storage/会话注入全部宿主权力,且 npm 无包、仅 dshfind 分发——挂载即供应链信任);② busy"纯上下文"注入的实际语义;③ storage 三件套路由配置成本;④ `persistConnections` 对 GUI 动态 session id 的实际重连行为;⑤ 信任模型:hub 端点**不认证**(默认 127.0.0.1:43123),本机任意进程可注入指令进 agent 会话——单用户开发机可接受但须有意识接受;⑥ license 与维护状态。
+**采用前置检查(6 项)**:① 源码审查(它持 `ctx.agents`/storage/会话注入全部宿主权力,且 npm 无包、仅 dshfind 分发——挂载即供应链信任);② busy"纯上下文"注入的实际语义;③ storage 三件套路由配置成本;④ `persistConnections` 对 GUI 动态 session id 的实际重连行为;⑤ 信任模型:hub 端点**不认证**(默认 `127.0.0.1:<hub-port>`),宿主机任意进程可注入指令进 agent 会话——单用户开发环境可接受但须有意识接受;⑥ license 与维护状态。
 
 ---
 
@@ -66,7 +66,7 @@
 | **静止 session 拉起** | `AgentRegistry.resume(ownerCtx, { resumeSessionId })`:"Prepare a persisted session and resume an agent on it"——经 `sessionPersistence.prepare` 重放日志 → 发布 agent/session → 启动 loop;返回 `AgentHandle{agent, dispose}`,dispose 能力归调用者;dsh-agent-loop 已实现(`identity.resume ? { resumeSessionId }`);重复身份双开被拒("duplicate exact session identity") | dsh-agent / dsh-agent-loop | 【已验证】类型面+实现 |
 | 非人类唤醒先例 | `dsh-schedule`:定时派发驱动 live root agent 跑 turn | dsh-schedule | 【已验证】README+实现 |
 | 权限围栏先例 | `dsh-jobs`:owner-session 围栏、跨 owner 不可见不可收 | dsh-jobs | 【已验证】README |
-| 插件挂载点 | `~/.dsh/profiles/web/cordis.patch.yml`(本机已有成功用户插件 `dsh-extra-writable-roots`);`ctx.webServer.register(route)` 可在 3080 上注册 HTTP 路由 | cordis / dsh-host-webserver | 【已验证】 |
+| 插件挂载点 | profile 目录下的 `cordis.patch.yml` 用户 patch 层(本机示例:一个已有的本地用户插件,先用 `insert:` 形式装载);`ctx.webServer.register(route)` 可在宿主 web 端口注册 HTTP 路由 | cordis / dsh-host-webserver | 【已验证】 |
 | 事件词汇预留 | persistence catalog 已含 `team/member`、`team/message/queued`、`team/message/delivered`、`team/task` | dsh-session | 【已验证】(上游已向多 agent 语义演进;本方案 v1 不依赖,用 user/message + plugin 来源) |
 | 不可行项佐证 | 无 `tool-cordis`、无 `schedule` 工具挂载于本部署;headless 是"新建一次性 agent"而非接续指定 session | dsh-base patch / dsh-headless | 【已验证】(否决纯 skill 路线的依据) |
 
@@ -75,7 +75,7 @@
 ## 3. 总体架构
 
 ```
-        ┌─────────────────────────── 宿主进程(单 GUI, 127.0.0.1:3080)───────────────────────────┐
+        ┌─────────────────────────── 宿主进程(单 GUI, 127.0.0.1:<port>)───────────────────────────┐
         │                                                                                       │
         │   Session A(agent)                     Session B(agent)               Session C(静止)  │
         │      │  ▲   ▲                                 │  ▲   ▲                                │

@@ -61,7 +61,7 @@ s2s 是上游的同宿主**特化**,能力天然重叠,因此:
 - **R1 ✅** 品牌与裁剪(包名 `dsh-s2s`/0.3.0-s2s.0、插件 id、`ctx.s2sHub/s2sMesh`、工具改名)。
 - **R2 ✅** 生命周期(mailbox + resume 拉起 + drain + 防双开 + 授权闸);**name 主寻址**已并入(现读标题)。
 - **R3 ▲** 预算(hop/限速)✅ 随 R2 落地;`s2s-etiquette` skill 待做。
-- **R4 ▲** 稳定发布:`0.3.0-s2s.0` tag 已打(✅),挂载文档/USAGE 已就位(✅),真实 GUI 端到端体验待你 reload 后确认。
+- **R4 ▲** 稳定发布:`0.3.0-s2s.0` tag 已打,挂载文档/USAGE 已就位;真实 GUI 端到端体验待部署环境确认(生效方式随部署环境热替换策略而别)。
 - **R5(设计已定格,待实现)** 同宿主改走**进程内 `S2sBroker`**(直取 `ctx.agents`,零端口/零 WS),hub 服务降为进程内可选跨机扩展——详见 [docs/SOLUTION.md §R5](docs/SOLUTION.md)。
 
 ## 状态
