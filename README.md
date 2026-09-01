@@ -54,6 +54,7 @@
 - ✅ **name 主寻址(R2)**:按会话标题点名,现读不缓存;同名/查无显式处理。
 - ✅ **静态会话拉起(R2)**:`AgentRegistry.resume` 拉起 + 信箱 + drain + 防双开。
 - ✅ **预算(R3 部分)**:发送侧 hop/限速。
+- 🔲 **待做**:会话内定时唤醒 `s2s_schedule`(每 N / 定点拉起)——设计见 [docs/SCHEDULE.md](docs/SCHEDULE.md)。
 - 🔲 **待做**:`s2s-etiquette` skill(何时找谁、礼节与汇报规范)。
 - 🔲 **待做**:历史/信箱持久化强度调优;真实 GUI 端到端体验(部署环境 reload 确认)。
 - 🔲 **可选项**:与外部标准 A2A agent 互通(需独立网关,本包不做)。
