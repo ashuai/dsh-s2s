@@ -4,7 +4,7 @@
 
 **实现思路受 a2a 启发,但并非其 fork**:a2a 是跨主机 mesh(hub + WebSocket + presence);而 s2s 是**同宿主单进程**路径,因此**不继承其 hub/网络层**,只借鉴了它的**注入习语**(空闲→`followup`、忙碌→`inject`)。s2s 用一个**进程内 broker** 直接投递,**零 TCP 端口、零 WS、零重连**。原 a2a 版实现归档在本仓库历史与 `legacy-a2a` 分支,作参照。(跨进程/跨机 mesh 请直接用 a2a;非 DSH 标准 A2A agent 需网关类插件。)
 
-> 使用手册见 [docs/USAGE.md](docs/USAGE.md);踩坑记录在本机 `plugins/LESSONS.md`(不进仓库);设计证据稿见 [docs/SOLUTION.md](docs/SOLUTION.md)(v0.2 历史基线)。
+> 使用手册见 [docs/USAGE.md](docs/USAGE.md);设计证据稿见 [docs/SOLUTION.md](docs/SOLUTION.md)(v0.2 历史基线)。
 
 ---
 
@@ -56,7 +56,7 @@
 - ✅ **预算(R3 部分)**:发送侧 hop/限速。
 - 🔲 **待做**:会话内定时唤醒 `s2s_schedule`(每 N / 定点拉起)——设计见 [docs/SCHEDULE.md](docs/SCHEDULE.md)。
 - 🔲 **待做**:`s2s-etiquette` skill(何时找谁、礼节与汇报规范)。
-- 🔲 **待做**:历史/信箱持久化强度调优;真实 GUI 端到端体验(部署环境 reload 确认)。
+- 🔲 **待做**:历史/信箱持久化强度调优;真实 GUI 端到端体验。
 - 🔲 **可选项**:与外部标准 A2A agent 互通(需独立网关,本包不做)。
 
 ## 开发
