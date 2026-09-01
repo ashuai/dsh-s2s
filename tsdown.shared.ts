@@ -9,7 +9,7 @@ import type { UserConfig } from 'tsdown'
 export function hostBundle(name: string): UserConfig {
   return {
     name,
-    entry: ['lib/types/index.js', 'lib/types/invariant.js'],
+    entry: ['lib/types/index.js'],
     outDir: 'lib',
     format: 'esm',
     platform: 'node',
