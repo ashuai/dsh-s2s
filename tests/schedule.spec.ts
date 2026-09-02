@@ -96,6 +96,18 @@ describe('s2s schedule service', () => {
     after = (await svc.list())[0]!
     expect(after.enabled).toBe(false)
   })
+  it('create/cancel append s2s/schedule-change to the target session log', async () => {
+    const appends: Array<{ type: string; data: unknown }> = []
+    const agent = { id: 'sess-1', status: 'idle' as const, followup: () => {}, inject: () => {}, session: { append: (type: string, data: unknown) => { appends.push({ type, data }) } } }
+    const { svc } = await makeService((id) => String(id) === 'sess-1' ? agent : undefined)
+    const job = await svc.create({ targetSessionId: 'sess-1', text: 'x', everySeconds: 600 })
+    expect(appends).toHaveLength(1)
+    expect(appends[0]!.type).toBe('s2s/schedule-change')
+    expect((appends[0]!.data as { operation: string }).operation).toBe('create')
+    await svc.cancel(job.id)
+    expect(appends[1]!.type).toBe('s2s/schedule-change')
+    expect((appends[1]!.data as { operation: string }).operation).toBe('cancel')
+  })
   it('tick injects into an idle target via followup', async () => {
     const { agent, followups } = idleAgent()
     const { svc } = await makeService((id) => String(id) === 'sess-1' ? agent : undefined)

@@ -30,7 +30,8 @@
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-session-projection": "^0.1.0-rc.6"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
@@ -51,5 +52,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "prepare": "pnpm run build"
+  },
+  "dependencies": {
+    "zod": "^3.24.0"
   }
 }

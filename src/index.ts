@@ -13,6 +13,7 @@ import { S2sDiscoveryService } from './discovery.ts'
 import { S2sLifecycleService, type LifecycleConfig } from './lifecycle.ts'
 import { S2sBudget, type BudgetConfig } from './budget.ts'
 import { S2sScheduleService, type ScheduleConfig } from './schedule.ts'
+import { s2sScheduleProjectionDefinition } from './schedule-project.ts'
 import * as toolsPlugin from './tools.ts'
 
 export { S2sError } from './error.ts'
@@ -62,6 +63,9 @@ export function apply(ctx: Context, config: Config): void {
   }
   if (config.schedule !== undefined) {
     ctx.plugin(S2sScheduleService, config.schedule)
+    ctx.inject(['sessionProjections'], (sctx) => {
+      (sctx as unknown as { sessionProjections: { register(definition: unknown): void } }).sessionProjections.register(s2sScheduleProjectionDefinition)
+    })
   }
   ctx.plugin(toolsPlugin)
 }
