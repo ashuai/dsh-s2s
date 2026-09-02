@@ -47,6 +47,8 @@ const JOB_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 /** Sub-5-minute periodic intervals collapse to a one-shot `at`. */
 const MIN_PERIODIC_SECONDS = 300
+/** Retry delay for a due one-shot whose target is busy (never dropped). */
+const RETRY_DELAY_MS = 1000
 
 /** A durable schedule: id-addressed jobs, replayed on mount, fired by tick(). */
 export class S2sScheduleService extends Service {
@@ -152,17 +154,21 @@ export class S2sScheduleService extends Service {
           await this.lifecycle.queueForDormant({ sessionId: job.targetSessionId, from: 's2s-schedule', text: job.text, msgId: 'sched-' + job.id + '-' + nowMs })
           fired += 1
         }
-        await this.advance(job, nowMs, step)
+        await this.settleMissed(job, nowMs, step)
         continue
       }
       if (agent.status !== 'idle') {
-        await this.advance(job, nowMs, step)
+        // Busy: do NOT interrupt and do NOT drop. Push the next fire forward
+        // and retry later, so a one-shot still lands once the target is idle.
+        job.nextAt = nowMs + (step ?? RETRY_DELAY_MS)
+        await this.persist(job)
         continue
       }
       this.inject(agent, job, nowMs)
       fired += 1
       if (job.everySeconds !== undefined) {
-        await this.advance(job, nowMs, step)
+        job.nextAt = nowMs + job.everySeconds * 1000
+        await this.persist(job)
       } else {
         job.enabled = false
         job.nextAt = 0
@@ -172,13 +178,17 @@ export class S2sScheduleService extends Service {
     return fired
   }
 
-  /** Push a recurring job forward, or retire a one-shot that could not fire. */
-  private async advance(job: ScheduleJob, nowMs: number, step: number | undefined): Promise<void> {
-    if (step !== undefined) {
-      job.nextAt = nowMs + step
-    } else if (nowMs > job.nextAt) {
+  /** Adjust a job whose target was not live at fire time. A recurring job rolls
+   * forward; a one-shot delivered through the lifecycle wake is consumed; a
+   * one-shot with no lifecycle to wake a dormant target is retried (never dropped). */
+  private async settleMissed(job: ScheduleJob, nowMs: number, step: number | undefined): Promise<void> {
+    if (job.everySeconds !== undefined) {
+      job.nextAt = nowMs + step!
+    } else if (this.lifecycle !== undefined) {
       job.enabled = false
       job.nextAt = 0
+    } else {
+      job.nextAt = nowMs + RETRY_DELAY_MS
     }
     await this.persist(job)
   }

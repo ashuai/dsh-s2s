@@ -79,6 +79,23 @@ describe('s2s schedule service', () => {
     expect(job.atIso).toBeDefined()
   })
 
+  it('tick retries a one-shot whose target is busy, then injects once idle (regression)', async () => {
+    const { agent, followups } = busyAgent()
+    const { svc } = await makeService((id) => String(id) === 'sess-1' ? agent : undefined)
+    const job = await svc.create({ targetSessionId: 'sess-1', text: 'must-land', atIso: new Date(Date.now() - 1000).toISOString() })
+    // busy: not injected, not dropped, next fire pushed forward
+    expect(await svc.tick(Date.now())).toBe(0)
+    expect(followups).toHaveLength(0)
+    let after = (await svc.list())[0]!
+    expect(after.enabled).toBe(true)
+    const retryAt = after.nextAt
+    // target becomes idle: the one-shot lands exactly once then retires
+    agent.status = 'idle'
+    expect(await svc.tick(retryAt + 1)).toBe(1)
+    expect(followups).toHaveLength(1)
+    after = (await svc.list())[0]!
+    expect(after.enabled).toBe(false)
+  })
   it('tick injects into an idle target via followup', async () => {
     const { agent, followups } = idleAgent()
     const { svc } = await makeService((id) => String(id) === 'sess-1' ? agent : undefined)
@@ -112,12 +129,13 @@ describe('s2s schedule service', () => {
     expect(q.mock.calls[0]![0]).toMatchObject({ sessionId: 'sess-1', from: 's2s-schedule', text: 'wake me' })
   })
 
-  it('tick retires a one-shot that could not fire (absent, no lifecycle)', async () => {
+  it('tick retries (never drops) a one-shot whose target is absent with no lifecycle', async () => {
     const { svc } = await makeService(() => undefined)
     const job = await svc.create({ targetSessionId: 'sess-1', text: 'once', atIso: new Date(Date.now() - 1000).toISOString() })
     expect(await svc.tick(Date.now())).toBe(0)
     const after = (await svc.list())[0]!
-    expect(after.enabled).toBe(false)
+    expect(after.enabled).toBe(true) // not dropped; retried
+    expect(after.nextAt).toBeGreaterThan(Date.now())
   })
 
   it('a one-shot idle target fires once then disables', async () => {
