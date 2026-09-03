@@ -1,0 +1,105 @@
+name: Release from change fragments
+
+on:
+  push:
+    branches: [main]
+    paths: ['changes/**']
+  workflow_dispatch:
+
+concurrency:
+  group: release-change-fragments
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      added: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.added }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        id: filter
+        # Only meaningful for a push; a manual dispatch forces the release.
+        if: github.event_name == 'push'
+        with:
+          filters: |
+            added:
+              added: 'changes/**'
+
+  publish:
+    needs: detect
+    if: needs.detect.outputs.added == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Bump package version
+        id: ver
+        run: |
+          set -euo pipefail
+          NEXT=$(node -e "
+            const fs = require('fs');
+            const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const cur = String(p.version || '');
+            const m = cur.match(/^(.*\\.)([0-9]+)$/);
+            const next = m ? m[1] + (Number(m[2]) + 1) : (cur ? cur + '.1' : '0.0.1');
+            p.version = next;
+            fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\\n');
+            console.log(next);
+          ")
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "Releasing version $NEXT"
+      - name: Gather change fragments
+        id: notes
+        run: |
+          set -euo pipefail
+          : > /tmp/body.md
+          shopt -s nullglob
+          for f in changes/*.md; do
+            case "$(basename "$f")" in README.md) continue ;; esac
+            printf '\n## %s\n\n' "$(basename "$f" .md)" >> /tmp/body.md
+            cat "$f" >> /tmp/body.md
+            printf '\n' >> /tmp/body.md
+          done
+          if [ ! -s /tmp/body.md ]; then
+            echo "No change fragments under changes/ — nothing to release." >&2
+            exit 1
+          fi
+          cp /tmp/body.md .release-notes.md
+          echo "Fragments gathered."
+      - name: Tag and create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          NEXT="${{ steps.ver.outputs.next }}"
+          TAG="v${NEXT}"
+          git add package.json
+          git commit -m "release: ${TAG}"
+          git tag "${TAG}"
+          git push origin HEAD:main --tags
+          gh release create "${TAG}" --title "${TAG}" --notes-file .release-notes.md
+      - name: Archive consumed fragments
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          count=0
+          for f in changes/*.md; do
+            case "$(basename "$f")" in README.md) continue ;; esac
+            git rm "$f"
+            count=$((count + 1))
+          done
+          if [ "$count" -gt 0 ]; then
+            git commit -m "changes: archive fragments released in v${{ steps.ver.outputs.next }}"
+            git push origin HEAD:main
+          fi
