@@ -10,7 +10,7 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { S2sBroker } from './broker.ts'
 import type { S2sDiscoveryService, S2sResolveResult } from './discovery.ts'
 import { S2sLifecycleService } from './lifecycle.ts'
-import type { S2sBudget } from './budget.ts'
+import type { S2sBudget, S2sThreadEntry } from './budget.ts'
 import type { S2sScheduleService } from './schedule.ts'
 
 function textRender(_args: object, value: { text: string }): ContentBlock[] {
@@ -36,6 +36,25 @@ function displayResolve(resolved: Extract<S2sResolveResult, { kind: 'not-found' 
     return 'No session named "' + resolved.name + '" (renames take effect immediately; list actual names with s2s_sessions).\n' + lines.join('\n')
   }
   return 'Multiple sessions named "' + resolved.name + '". Disambiguate with session_id:\n' + resolved.candidates.map(function(c) { return '- ' + c.sessionId + ' (' + c.workspaceDir + ')' }).join('\n')
+}
+
+function buildThread(broker: S2sBroker, from: string, to: string): S2sThreadEntry[] {
+  const records = [
+    ...broker.history(to).filter((r) => r.from === from),
+    ...broker.history(from).filter((r) => r.from === to),
+  ]
+  return records.sort((a, b) => a.createdAt - b.createdAt).map((r) => ({ from: r.from, text: r.text, at: r.createdAt }))
+}
+
+function modelOf(exec: unknown): { provider?: string; model?: string; reasoningEffort?: string } | undefined {
+  const agent = (exec as { agent?: { session?: { requestHeader?: () => { config?: { provider?: string; model?: string; reasoningEffort?: string } } } } } | undefined)?.agent
+  const cfg = agent?.session?.requestHeader?.()?.config
+  if (cfg === undefined) return undefined
+  return {
+    ...(cfg.provider === undefined ? {} : { provider: cfg.provider }),
+    ...(cfg.model === undefined ? {} : { model: cfg.model }),
+    ...(cfg.reasoningEffort === undefined ? {} : { reasoningEffort: cfg.reasoningEffort }),
+  }
 }
 
 export function buildTools(deps: { broker: S2sBroker; discovery: S2sDiscoveryService; lifecycle?: S2sLifecycleService; budget?: S2sBudget; schedule?: S2sScheduleService }): ToolDefinition[] {
@@ -86,15 +105,20 @@ export function buildTools(deps: { broker: S2sBroker; discovery: S2sDiscoverySer
         if (resolved.kind !== 'ok') return { text: displayResolve(resolved) }
         const from = args.from ?? String(exec.agent?.id ?? 'unknown')
         const msgId = 'm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
-        if (budget !== undefined) budget.check(from, resolved.sessionId, 0)
+        let warn: string | undefined
+        if (budget !== undefined) {
+          const result = await budget.check(from, resolved.sessionId, 0, buildThread(broker, from, resolved.sessionId), modelOf(exec))
+          if (result?.verdict === 'warn') warn = result.reason
+        }
         if (resolved.state !== 'dormant') {
           const state = broker.deliver(resolved.sessionId, { from: from, text: args.text, msgId: msgId, ...(args.reply_to === undefined ? {} : { replyTo: args.reply_to }) })
-          return { text: 'Delivered to "' + labelOf(resolved) + '" (state=' + state + ').' }
+          return { text: 'Delivered to "' + labelOf(resolved) + '" (state=' + state + ').' + (warn === undefined ? '' : '\n[s2s-budget] ' + warn) }
         }
         if (lifecycle === undefined) return { text: '"' + labelOf(resolved) + '" is dormant and no lifecycle is configured; use s2s_resume with autoResume=allow to wake it.' }
         const outcome = await lifecycle.queueForDormant({ sessionId: resolved.sessionId, from: from, text: args.text, msgId: msgId, ...(args.reply_to === undefined ? {} : { replyTo: args.reply_to }) })
         const queued = await lifecycle.queuedCount(resolved.sessionId)
-        return { text: outcome === 'resumed' ? 'Woke "' + labelOf(resolved) + '" and delivered (queued: ' + queued + ').' : 'Queued for "' + labelOf(resolved) + '" (' + queued + ' total).' }
+        const base = outcome === 'resumed' ? 'Woke "' + labelOf(resolved) + '" and delivered (queued: ' + queued + ').' : 'Queued for "' + labelOf(resolved) + '" (' + queued + ' total).'
+        return { text: base + (warn === undefined ? '' : '\n[s2s-budget] ' + warn) }
       },
     }),
     defineTool({

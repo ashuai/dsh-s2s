@@ -12,6 +12,7 @@ import { S2sBroker } from './broker.ts'
 import { S2sDiscoveryService } from './discovery.ts'
 import { S2sLifecycleService, type LifecycleConfig } from './lifecycle.ts'
 import { S2sBudget, type BudgetConfig } from './budget.ts'
+import { buildSemanticJudge } from './judge.ts'
 import { S2sScheduleService, type ScheduleConfig } from './schedule.ts'
 import { s2sScheduleProjectionDefinition } from './schedule-project.ts'
 import * as toolsPlugin from './tools.ts'
@@ -59,7 +60,9 @@ export function apply(ctx: Context, config: Config): void {
     })
   }
   if (config.budget !== undefined) {
-    ctx.provide('s2sBudget', new S2sBudget(config.budget))
+    // An injected semantic judge drives the anti-loop semantic layer; its model call degrades to the counting caps on any failure.
+    const judge = config.budget.semantic?.enabled ? buildSemanticJudge(ctx) : undefined
+    ctx.provide('s2sBudget', new S2sBudget(config.budget, judge))
   }
   if (config.schedule !== undefined) {
     ctx.plugin(S2sScheduleService, config.schedule)
