@@ -4,7 +4,7 @@
 
 **实现思路受 a2a 启发,但并非其 fork**:a2a 是跨主机 mesh(hub + WebSocket + presence);而 s2s 是**同宿主单进程**路径,因此**不继承其 hub/网络层**,只借鉴了它的**注入习语**(空闲→`followup`、忙碌→`inject`)。s2s 用一个**进程内 broker** 直接投递,**零 TCP 端口、零 WS、零重连**。原 a2a 版实现归档在本仓库历史与 `legacy-a2a` 分支,作参照。(跨进程/跨机 mesh 请直接用 a2a;非 DSH 标准 A2A agent 需网关类插件。)
 
-> 使用手册见 [docs/USAGE.md](docs/USAGE.md);场景与最佳实践见 [docs/BEST_PRACTICES.md](docs/BEST_PRACTICES.md);设计证据稿见 [docs/SOLUTION.md](docs/SOLUTION.md)(v0.2 历史基线)。
+> 使用手册见 [USAGE.md](USAGE.md);场景与最佳实践见 [docs/BEST_PRACTICES.md](docs/BEST_PRACTICES.md);设计证据稿见 [docs/SOLUTION.md](docs/SOLUTION.md)(v0.2 历史基线)。
 
 ---
 
@@ -24,11 +24,11 @@
 - **进程内投递**:`S2sBroker.deliver(sessionId, {from,text})` → `ctx.agents.get(...)` → `agent.followup`(空闲)/`inject`(忙碌)。零网络、零序列化。
 - **name 主寻址**:`s2s_resume(name: "开发", ...)` / `s2s_message(name: "产品", ...)`;每次解析**现读会话最新标题**(日志 `session/title` 事件),改名即刻生效;同名→`ambiguous`(用 `session_id` 消歧),查无→`not-found`+候选。
 - **拉起静止会话**:入信箱 → `autoResume=allow` 时 `AgentRegistry.resume` 拉起 → 投递;拉起的会话保留 live-idle(不自动归眠)。
-- **6 个模型工具**:`s2s_peers`(live)/ `s2s_sessions`(全部+标题+三态)/ `s2s_message`(发/唤醒)/ `s2s_resume`(显式唤醒)/ `s2s_history`(进程作用域历史)/ `s2s_schedule`(会话内定时注入)。
+- **6 个模型工具**:`s2s_peers`(本项目 live)/ `s2s_sessions`(本项目 标题+三态;`all=true` 全量)/ `s2s_message`(发/唤醒)/ `s2s_resume`(显式唤醒)/ `s2s_history`(进程作用域历史)/ `s2s_schedule`(会话内定时注入)。
 - **持久信箱**:`~/.dsh/s2s/mailboxes/<sessionId>/*.json`,原子写、时序命名、损坏自愈。
 - **按需加载**:`lifecycle`/`budget` 配置块缺席即不挂载;broker/discovery/tools 恒挂(核心)。
 
-> 详细用法见 [docs/USAGE.md](docs/USAGE.md)。
+> 详细用法见 [USAGE.md](USAGE.md)。
 
 ## 挂载
 
