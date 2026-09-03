@@ -8,7 +8,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { S2sBroker } from './broker.ts'
-import type { S2sDiscoveryService, S2sResolveResult } from './discovery.ts'
+import type { S2sDiscoveryService, S2sResolveResult, S2sSessionInfo } from './discovery.ts'
 import { S2sLifecycleService } from './lifecycle.ts'
 import type { S2sBudget, S2sThreadEntry } from './budget.ts'
 import type { S2sScheduleService } from './schedule.ts'
@@ -57,6 +57,14 @@ function modelOf(exec: unknown): { provider?: string; model?: string; reasoningE
   }
 }
 
+function sameProjectAsCaller(infos: readonly S2sSessionInfo[], exec: unknown): readonly S2sSessionInfo[] {
+  const callerId = (exec as { agent?: { id?: string } } | undefined)?.agent?.id
+  if (callerId === undefined) return infos
+  const caller = infos.find((info) => info.sessionId === callerId)
+  if (caller === undefined) return infos
+  return infos.filter((info) => info.workspaceDir === caller.workspaceDir)
+}
+
 export function buildTools(deps: { broker: S2sBroker; discovery: S2sDiscoveryService; lifecycle?: S2sLifecycleService; budget?: S2sBudget; schedule?: S2sScheduleService }): ToolDefinition[] {
   const broker = deps.broker, discovery = deps.discovery, lifecycle = deps.lifecycle, budget = deps.budget, schedule = deps.schedule
   const resolve = async function(name: string | undefined, sessionId: string | undefined): Promise<S2sResolveResult | { kind: 'err'; reason: string }> {
@@ -68,22 +76,31 @@ export function buildTools(deps: { broker: S2sBroker; discovery: S2sDiscoverySer
   return [
     defineTool({
       name: 's2s_peers',
-      description: 'List live sessions (not dormant) with title (name) and state. Use the title in s2s_message / s2s_resume.',
-      parameters: {},
+      description: 'List live sessions in the current project (all=true lists every project) with title (name) and state. Use the title in s2s_message / s2s_resume.',
+      parameters: { all: { type: 'boolean', description: 'List sessions across all projects (default: current project only).' } },
       output: OUTPUT,
-      execute: async function() {
-        const sessions = (await discovery.list()).filter(function(s) { return s.state !== 'dormant' })
+      execute: async function(args, exec) {
+        const infos = await discovery.list()
+        const scoped = args.all === true ? infos : sameProjectAsCaller(infos, exec)
+        const sessions = scoped.filter(function(s) { return s.state !== 'dormant' })
         if (sessions.length === 0) return { text: 'No live sessions.' }
         return { text: sessions.map(function(s) { return (s.title ?? '(untitled)') + '  [' + s.sessionId.slice(0, 8) + ']  ' + s.state }).join('\n') }
       },
     }),
     defineTool({
       name: 's2s_sessions',
-      description: 'List known sessions with lifecycle state (live-idle/live-busy/dormant). Show title, short id, state. Use the title as the addr in s2s_message / s2s_resume.',
-      parameters: { query: { type: 'string', description: 'Optional substring filter over session title, session id, or workspace directory name.' } },
+      description: 'List known sessions in the current project (all=true lists every project) with lifecycle state (live-idle/live-busy/dormant). Show title, short id, state. Use the title as the addr in s2s_message / s2s_resume.',
+      parameters: {
+        all: { type: 'boolean', description: 'List sessions across all projects (default: current project only).' },
+        query: { type: 'string', description: 'Optional substring filter over session title, session id, or workspace directory name.' },
+      },
       output: OUTPUT,
-      execute: async function(args) {
-        const sessions = await discovery.list(args.query)
+      execute: async function(args, exec) {
+        const allInfos = await discovery.list()
+        const scoped = args.all === true ? allInfos : sameProjectAsCaller(allInfos, exec)
+        const sessions = (args.query === undefined || args.query.length === 0)
+          ? scoped
+          : scoped.filter(function(s) { const needle = (args.query as string).toLowerCase(); return (s.title ?? '').toLowerCase().includes(needle) || s.sessionId.toLowerCase().includes(needle) || s.workspaceDir.toLowerCase().includes(needle) })
         if (sessions.length === 0) return { text: 'No sessions found.' }
         return { text: sessions.map(function(s) { return (s.title ?? '(untitled)') + '  [' + s.sessionId.slice(0, 8) + ']  ' + s.state + '  ws=' + s.workspaceDir + (s.lastActivity === undefined ? '' : '  last=' + new Date(s.lastActivity).toISOString()) }).join('\n') }
       },

@@ -42,7 +42,7 @@ describe('s2s tools execution', () => {
     const { by } = makeTools({ discovery: { list: vi.fn(async () => [
       { sessionId: 's1', title: '', state: 'live-busy', workspaceDir: 'ws', lastActivity: 1700000000000 },
     ]) } })
-    const out = await by('s2s_sessions').execute({ query: 'a' }, {})
+    const out = await by('s2s_sessions').execute({ query: 'ws' }, {})
     expect(out.text).toContain('live-busy')
     expect(out.text).toContain('last=')
   })
@@ -50,6 +50,35 @@ describe('s2s tools execution', () => {
     const { by } = makeTools()
     const out = await by('s2s_sessions').execute({}, {})
     expect(out.text).toBe('No sessions found.')
+  })
+  it('s2s_peers defaults to the caller project only', async () => {
+    const { by } = makeTools({ discovery: { list: vi.fn(async () => [
+      { sessionId: 'sess-a', title: 'me', state: 'live-idle', workspaceDir: 'proj-a' },
+      { sessionId: 's1', title: 'a', state: 'live-idle', workspaceDir: 'proj-a' },
+      { sessionId: 's2', title: 'b', state: 'live-idle', workspaceDir: 'proj-b' },
+    ]) } })
+    const out = await by('s2s_peers').execute({}, { agent: { id: 'sess-a' } })
+    expect(out.text).toContain('a')
+    expect(out.text).not.toContain('b')
+  })
+  it('s2s_peers all=true lists every project', async () => {
+    const { by } = makeTools({ discovery: { list: vi.fn(async () => [
+      { sessionId: 'sess-a', title: 'me', state: 'live-idle', workspaceDir: 'proj-a' },
+      { sessionId: 's2', title: 'b', state: 'live-idle', workspaceDir: 'proj-b' },
+    ]) } })
+    const out = await by('s2s_peers').execute({ all: true }, { agent: { id: 'sess-a' } })
+    expect(out.text).toContain('b')
+  })
+  it('s2s_sessions scopes to the caller project and respects all + query', async () => {
+    const { by } = makeTools({ discovery: { list: vi.fn(async () => [
+      { sessionId: 'sess-a', title: 'me', state: 'live-idle', workspaceDir: 'proj-a' },
+      { sessionId: 's1', title: 'alpha', state: 'dormant', workspaceDir: 'proj-a' },
+      { sessionId: 's2', title: 'beta', state: 'dormant', workspaceDir: 'proj-b' },
+    ]) } })
+    const scoped = await by('s2s_sessions').execute({ query: 'beta' }, { agent: { id: 'sess-a' } })
+    expect(scoped.text).toBe('No sessions found.')
+    const all = await by('s2s_sessions').execute({ query: 'beta', all: true }, { agent: { id: 'sess-a' } })
+    expect(all.text).toContain('beta')
   })
   it('s2s_message no args -> err', async () => {
     const { by } = makeTools()
