@@ -3,3 +3,5 @@ node_modules/
 .DS_Store
 .local/
 lib/
+# Repo design/plan docs stay local; only code + CI + change fragments sync to GitHub.
+docs/
