@@ -2,7 +2,7 @@
   "name": "dsh-s2s",
   "private": true,
   "description": "Independent same-host session-to-session interconnection for the DeepSeek Harness. In-process broker delivery, name (title) addressing, dormant-session wake, durable mailbox, anti-loop budget. Inspired by @dpskh/a2a injection idiom; no hub or network mesh.",
-  "version": "0.4.0-s2s.1",
+  "version": "0.4.0-s2s.2",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
