@@ -10,7 +10,6 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { S2sError } from './error.ts'
-import { S2S_SOURCE_KIND } from './constants.ts'
 
 export interface S2sDeliverInput {
   from: string
@@ -53,7 +52,7 @@ export class S2sBroker extends Service {
 ${input.text}`
     const userMessage = createUserMessage({
       content: [{ type: 'text', text }],
-      source: { kind: S2S_SOURCE_KIND, msgId: input.msgId },
+      source: { kind: 'plugin', plugin: 'dsh-s2s' },
     })
     if (agent.status === 'idle') agent.followup(userMessage)
     else agent.inject(userMessage)

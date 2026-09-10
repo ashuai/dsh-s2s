@@ -1,15 +1,7 @@
 /**
- * dsh-llm MessageSourceMap augmentation: the s2s seam's source kinds.
- * Registered so createUserMessage accepts kind 's2s' (live broker delivery)
- * and 's2s-lifecycle' (dormant wake delivery).
+ * dsh-s2s types.
+ * Injected messages use the built-in `plugin` source kind
+ * (`{ kind: 'plugin', plugin: 'dsh-s2s' }`) instead of custom source kinds.
  * @module dsh-s2s/types
  */
-declare module '@deepseek-ai/dsh-llm' {
-  interface MessageSourceMap {
-    s2s: { kind: 's2s'; msgId: string }
-    's2s-lifecycle': { kind: 's2s-lifecycle'; msgId: string }
-    's2s-schedule': { kind: 's2s-schedule'; jobId: string }
-  }
-}
-
 export {}

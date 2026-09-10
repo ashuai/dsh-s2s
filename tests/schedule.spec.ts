@@ -96,18 +96,6 @@ describe('s2s schedule service', () => {
     after = (await svc.list())[0]!
     expect(after.enabled).toBe(false)
   })
-  it('create/cancel append s2s/schedule-change to the target session log', async () => {
-    const appends: Array<{ type: string; data: unknown }> = []
-    const agent = { id: 'sess-1', status: 'idle' as const, followup: () => {}, inject: () => {}, session: { append: (type: string, data: unknown) => { appends.push({ type, data }) } } }
-    const { svc } = await makeService((id) => String(id) === 'sess-1' ? agent : undefined)
-    const job = await svc.create({ targetSessionId: 'sess-1', text: 'x', everySeconds: 600 })
-    expect(appends).toHaveLength(1)
-    expect(appends[0]!.type).toBe('s2s/schedule-change')
-    expect((appends[0]!.data as { operation: string }).operation).toBe('create')
-    await svc.cancel(job.id)
-    expect(appends[1]!.type).toBe('s2s/schedule-change')
-    expect((appends[1]!.data as { operation: string }).operation).toBe('cancel')
-  })
   it('tick injects into an idle target via followup', async () => {
     const { agent, followups } = idleAgent()
     const { svc } = await makeService((id) => String(id) === 'sess-1' ? agent : undefined)
@@ -115,8 +103,9 @@ describe('s2s schedule service', () => {
     const now = job.nextAt + 1
     expect(await svc.tick(now)).toBe(1)
     expect(followups).toHaveLength(1)
-    const msg = followups[0] as { content: { text: string }[]; source: { kind: string } }
-    expect(msg.source.kind).toBe('s2s-schedule')
+    const msg = followups[0] as { content: { text: string }[]; source: { kind: string; plugin: string } }
+    expect(msg.source.kind).toBe('plugin')
+    expect(msg.source.plugin).toBe('dsh-s2s')
     expect(msg.content[0]!.text).toContain('run it')
     expect(msg.content[0]!.text).toContain('[s2s schedule]')
   })

@@ -16,7 +16,6 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { S2sError } from './error.ts'
-import type { S2sScheduleChange } from './schedule-project.ts'
 import type { S2sLifecycleService } from './lifecycle.ts'
 
 /** One scheduled job. */
@@ -118,7 +117,6 @@ export class S2sScheduleService extends Service {
     }
     this.jobs.set(id, job)
     await this.persist(job)
-    await this.emitChange(job.targetSessionId, { version: 1, operation: 'create', job })
     return { ...job }
   }
 
@@ -136,7 +134,6 @@ export class S2sScheduleService extends Service {
     const target = job.targetSessionId
     this.jobs.delete(id)
     await rm(this.fileFor(id), { force: true }).catch(() => undefined)
-    await this.emitChange(target, { version: 1, operation: 'cancel', id })
     return true
   }
 
@@ -202,7 +199,7 @@ export class S2sScheduleService extends Service {
     const text = '[s2s schedule] job=' + job.id + ' at=' + new Date(nowMs).toISOString() + '\n' + job.text
     const message = createUserMessage({
       content: [{ type: 'text', text }],
-      source: { kind: 's2s-schedule', jobId: job.id },
+      source: { kind: 'plugin', plugin: 'dsh-s2s' },
     })
     agent.followup(message)
   }
@@ -221,13 +218,6 @@ export class S2sScheduleService extends Service {
 
   private fileFor(id: string): string {
     return join(this.dir, id + '.json')
-  }
-
-  /** Append a `s2s/schedule-change` event to the target session log (live only). */
-  private async emitChange(targetSessionId: string, change: S2sScheduleChange): Promise<void> {
-    const agent = this.ctx.agents.get(SessionId(targetSessionId))
-    if (agent === undefined) return
-    try { (agent as unknown as { session: { append(type: string, data: unknown): void } }).session.append('s2s/schedule-change', change) } catch { /* event append is best-effort */ }
   }
 
   private async persist(job: ScheduleJob): Promise<void> {

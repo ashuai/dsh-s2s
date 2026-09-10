@@ -150,7 +150,7 @@ export class S2sLifecycleService extends Service {
 ${entry.text}`
       const userMessage = createUserMessage({
         content: [{ type: 'text', text }],
-        source: { kind: 's2s-lifecycle', msgId: entry.msgId },
+        source: { kind: 'plugin', plugin: 'dsh-s2s' },
       })
       if (agent.status === 'idle') {
         agent.followup(userMessage)
