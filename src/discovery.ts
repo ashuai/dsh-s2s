@@ -5,6 +5,13 @@
  * `ctx.sessionQuery.readTitle(sessionId)` for titles (live or persisted) and
  * `ctx.agents` for live state. Fallback (when the sessionQuery service is
  * unavailable): scan ${DSH_HOME || ~/.dsh}/sessions for on-disk session dirs.
+ *
+ * Perf: per-session title reads are the expensive part, so enumeration runs
+ * them with bounded concurrency (never a serial await loop), an exact
+ * session_id resolve reads only that one title, and concurrent collects
+ * coalesce onto a single in-flight scan. Titles are deliberately not cached —
+ * address resolution always reads the freshest title (a rename is visible at
+ * once), matching the documented addressing semantics.
  * @module dsh-s2s/discovery
  */
 import { readdir, readFile } from 'node:fs/promises'
@@ -36,9 +43,30 @@ interface SessionQueryLike {
   readTitle(sessionId: unknown): Promise<{ readonly title?: string } | undefined>
 }
 
+/** Max concurrent title reads / log scans; bounds open FDs on a large corpus. */
+const READ_CONCURRENCY = 8
+
+/** Run `fn` over `items` with bounded concurrency, preserving input order. */
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  const workers = Math.min(Math.max(limit, 1), items.length)
+  let next = 0
+  await Promise.all(Array.from({ length: workers }, async () => {
+    for (;;) {
+      const index = next
+      next += 1
+      if (index >= items.length) return
+      results[index] = await fn(items[index]!)
+    }
+  }))
+  return results
+}
+
 export class S2sDiscoveryService extends Service {
   private queryService?: SessionQueryLike
   private readonly sessionsRoot: string | undefined
+  /** In-flight full scan shared by concurrent callers; cleared as soon as it settles. */
+  private inflight: Promise<S2sSessionInfo[]> | undefined
   static inject = ['agents']
 
   constructor(ctx: Context, config?: { sessionsRoot?: string }) {
@@ -64,11 +92,12 @@ export class S2sDiscoveryService extends Service {
   }
 
   async resolve(name: string | undefined, sessionId: string | undefined): Promise<S2sResolveResult> {
-    const infos = await this.collect()
     if (sessionId !== undefined && sessionId.length > 0) {
-      const exact = infos.find(info => info.sessionId === sessionId)
+      // Fast path: an exact id needs only that session's title, not the corpus.
+      const exact = await this.collectById(sessionId)
       if (exact !== undefined) return toOk(exact)
     }
+    const infos = await this.collect()
     const needle = name?.trim().toLowerCase()
     if (needle === undefined || needle.length === 0) return { kind: 'not-found', name: name ?? '', candidates: infos.map(toCandidate) }
     const matches = infos.filter(info => info.title?.trim().toLowerCase() === needle)
@@ -77,8 +106,23 @@ export class S2sDiscoveryService extends Service {
     return toOk(matches[0]!)
   }
 
+  /**
+   * Coalesce concurrent full scans: callers arriving while a scan is in flight
+   * share it instead of re-enumerating. Cleared as soon as it settles, so a
+   * later call always re-reads (titles stay fresh).
+   */
+  private collect(): Promise<S2sSessionInfo[]> {
+    const running = this.inflight
+    if (running !== undefined) return running
+    const run = this.collectUncached()
+    this.inflight = run
+    const clear = (): void => { if (this.inflight === run) this.inflight = undefined }
+    run.then(clear, clear)
+    return run
+  }
+
   /** Enumerate the complete corpus: sessionQuery primary, DSH_HOME scan fallback. */
-  private async collect(): Promise<S2sSessionInfo[]> {
+  private async collectUncached(): Promise<S2sSessionInfo[]> {
     const query = this.queryService
     if (query !== undefined && typeof query.listSessions === 'function') {
       try { return await this.collectFromQuery(query) } catch { /* fall through to FS scan */ }
@@ -86,41 +130,57 @@ export class S2sDiscoveryService extends Service {
     return this.collectFromFs()
   }
 
+  /** One exact session id without reading every other session's title. */
+  private async collectById(sessionId: string): Promise<S2sSessionInfo | undefined> {
+    const query = this.queryService
+    if (query !== undefined && typeof query.listSessions === 'function') {
+      try {
+        const records = await query.listSessions()
+        const record = records.find(entry => String(entry.header.id) === sessionId)
+        if (record === undefined) return undefined
+        let title: string | undefined
+        try { title = (await query.readTitle(SessionId(sessionId)))?.title } catch { title = undefined }
+        return toInfo(record, sessionId, title, this.stateOf(sessionId))
+      } catch { /* fall through to the full scan */ }
+    }
+    const infos = await this.collect()
+    return infos.find(entry => entry.sessionId === sessionId)
+  }
+
   private async collectFromQuery(query: SessionQueryLike): Promise<S2sSessionInfo[]> {
     const records = await query.listSessions()
-    const infos: S2sSessionInfo[] = []
-    for (const record of records) {
+    return mapLimit(records, READ_CONCURRENCY, async (record): Promise<S2sSessionInfo> => {
       const sessionId = String(record.header.id)
-      const agent = this.ctx.agents.get(SessionId(sessionId))
-      const state = agent !== undefined ? (agent.status === 'idle' ? 'live-idle' : 'live-busy') : 'dormant'
       let title: string | undefined
       try { title = (await query.readTitle(SessionId(sessionId)))?.title } catch { title = undefined }
-      infos.push({ sessionId, ...(title === undefined ? {} : { title }), workspaceDir: record.header.cwd ?? '?', state })
-    }
-    return infos
+      return toInfo(record, sessionId, title, this.stateOf(sessionId))
+    })
   }
 
   private async collectFromFs(): Promise<S2sSessionInfo[]> {
     const home = process.env.DSH_HOME || process.env.DSH_DATA_DIR
     const root = this.sessionsRoot ?? (home ? join(home, 'sessions') : join(homedir(), '.dsh', 'sessions'))
-    const infos: S2sSessionInfo[] = []
     let level: string[] = []
     try { level = await readdir(root) } catch { level = [] }
+    const targets: { workspaceDir: string; entry: string }[] = []
     for (const workspaceDir of level) {
       const dir = join(root, workspaceDir)
       let entries: string[] = []
       try { entries = await readdir(dir) } catch { continue }
       for (const entry of entries) {
-        if (!entry.startsWith('session-')) continue
-        const sessionId = entry.slice('session-'.length)
-        if (sessionId.length === 0) continue
-        const agent = this.ctx.agents.get(SessionId(sessionId))
-        const state = agent !== undefined ? (agent.status === 'idle' ? 'live-idle' : 'live-busy') : 'dormant'
-        const title = await this.readTitleFromFs(join(dir, entry))
-        infos.push({ sessionId, ...(title === undefined ? {} : { title }), workspaceDir, state })
+        if (entry.startsWith('session-') && entry.length > 'session-'.length) targets.push({ workspaceDir, entry })
       }
     }
-    return infos
+    return mapLimit(targets, READ_CONCURRENCY, async ({ workspaceDir, entry }): Promise<S2sSessionInfo> => {
+      const sessionId = entry.slice('session-'.length)
+      const title = await this.readTitleFromFs(join(root, workspaceDir, entry))
+      return { sessionId, ...(title === undefined ? {} : { title }), workspaceDir, state: this.stateOf(sessionId) }
+    })
+  }
+
+  private stateOf(sessionId: string): S2sSessionInfo['state'] {
+    const agent = this.ctx.agents.get(SessionId(sessionId))
+    return agent !== undefined ? (agent.status === 'idle' ? 'live-idle' : 'live-busy') : 'dormant'
   }
 
   private async readTitleFromFs(sessionDir: string): Promise<string | undefined> {
@@ -136,6 +196,11 @@ export class S2sDiscoveryService extends Service {
     } catch {}
     return undefined
   }
+}
+
+/** Build one row from a query record + its resolved title and live state. */
+function toInfo(record: SessionRecordLike, sessionId: string, title: string | undefined, state: S2sSessionInfo['state']): S2sSessionInfo {
+  return { sessionId, ...(title === undefined ? {} : { title }), workspaceDir: record.header.cwd ?? '?', state }
 }
 
 function toCandidate(info: S2sSessionInfo): S2sCandidate {
@@ -167,4 +232,3 @@ function latestTitleFromJsonl(text: string): string | undefined {
   }
   return title
 }
-
