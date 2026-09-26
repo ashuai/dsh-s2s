@@ -111,7 +111,11 @@ export class S2sDiscoveryService extends Service {
   constructor(ctx: Context, config?: S2sDiscoveryConfig) {
     super(ctx, 's2sDiscovery')
     this.sessionsRoot = config?.sessionsRoot
-    this.cache = new TitleCache(config?.cachePath)
+    this.cache = new TitleCache(config?.cachePath, (error) => {
+      // A denied cache write must be reported once: silently swallowing it turns
+      // the whole L0 layer into a no-op and every later call re-reads the corpus.
+      ctx.logger?.warn(`s2s discovery: title cache is not writable, falling back to per-call reads: ${String(error)}`)
+    })
     this.now = config?.now ?? Date.now
     // Optional dependencies: bind only when the host provides them.
     ctx.inject(['sessionQuery'], (sctx) => {

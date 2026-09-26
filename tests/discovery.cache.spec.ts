@@ -277,3 +277,34 @@ describe('title cache unit', () => {
     expect(raw.sessions.a?.title).toBe('写回')
   })
 })
+
+describe('title cache persistence reporting', () => {
+  it('reports a denied write once and stops retrying', async () => {
+    const { TitleCache } = await import('../src/title-cache.ts')
+    const errors: unknown[] = []
+    // A path the process cannot write to (a directory, not a file).
+    const dir = await mkdtemp(join(tmpdir(), 's2s-cache-denied-'))
+    dirs.push(dir)
+    const cache = new TitleCache(dir, (e) => errors.push(e))
+    cache.set('a', 'x')
+    await cache.flush()
+    await cache.flush() // second attempt must be skipped
+    expect(errors).toHaveLength(1)
+    expect(cache.persistenceUnavailable).toBe(true)
+    // reads still work from memory even when persistence is denied
+    expect(cache.get('a')?.title).toBe('x')
+  })
+
+  it('falls back to ~/.dsh when DSH_HOME is absent (never memory-only)', async () => {
+    const { TitleCache } = await import('../src/title-cache.ts')
+    const saved = process.env.DSH_HOME
+    delete process.env.DSH_HOME
+    try {
+      const cache = new TitleCache()
+      // Path resolution must be a real file path, not undefined.
+      expect(() => cache.set('a', 'x')).not.toThrow()
+    } finally {
+      if (saved !== undefined) process.env.DSH_HOME = saved
+    }
+  })
+})

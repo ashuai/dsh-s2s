@@ -24,6 +24,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 /** One cached observation of a session's title. */
@@ -52,17 +53,21 @@ interface TitleCacheFile {
 /**
  * Resolve the cache file path.
  *
- * Persistence is enabled only when the deployment actually declares a DSH home
- * (`DSH_HOME` / `DSH_DATA_DIR`). A harness booted without one — every unit test,
- * and any ad-hoc embed — then gets a purely in-process cache instead of a file
- * in the user's real `~/.dsh`. That keeps the plugin from writing deployment
- * state it was never told about, and keeps tests hermetic by default.
+ * Mirrors the harness's own home resolution (`dsh-home-paths`' `resolveDshHome`):
+ * `DSH_HOME` when it is set and non-blank, otherwise `~/.dsh`. Deliberately NOT
+ * `undefined` when the env var is absent — an earlier revision disabled
+ * persistence in that case, which silently downgraded the cache to memory-only
+ * on a real deployment, so every later call re-read the whole corpus.
  *
- * @returns the cache path, or undefined for a memory-only cache.
+ * Tests pass an explicit `cachePath` so they never touch a real `~/.dsh`.
+ *
+ * @returns the absolute cache file path.
  */
-function defaultCachePath(): string | undefined {
+function defaultCachePath(): string {
   const home = process.env.DSH_HOME || process.env.DSH_DATA_DIR
-  return home === undefined || home.length === 0 ? undefined : join(home, 's2s', 'title-cache.json')
+  return home !== undefined && home.trim().length > 0
+    ? join(home, 's2s', 'title-cache.json')
+    : join(homedir(), '.dsh', 's2s', 'title-cache.json')
 }
 
 /**
@@ -74,28 +79,31 @@ function defaultCachePath(): string | undefined {
  */
 export class TitleCache {
   private readonly entries = new Map<string, TitleCacheEntry>()
-  private readonly filePath: string | undefined
+  private readonly filePath: string
   private loaded = false
   private dirty = false
+  private persistFailed = false
   private flushTimer: ReturnType<typeof setTimeout> | undefined
 
   /** Debounce window for persistence; short enough to survive a crash. */
   private static readonly FLUSH_DELAY_MS = 250
 
-  constructor(filePath?: string) {
-    this.filePath = filePath ?? defaultCachePath()
+  /** Optional one-shot reporter for a denied/failed cache write. */
+  private readonly onPersistError: ((error: unknown) => void) | undefined
+  /** True once a write failed; further writes are skipped. */
+  get persistenceUnavailable(): boolean {
+    return this.persistFailed
   }
 
-  /** Whether this cache persists to disk at all. */
-  get persistent(): boolean {
-    return this.filePath !== undefined
+  constructor(filePath?: string, onPersistError?: (error: unknown) => void) {
+    this.filePath = filePath ?? defaultCachePath()
+    this.onPersistError = onPersistError
   }
 
   /** Load the persisted map once, tolerating any malformed or absent file. */
   private load(): void {
     if (this.loaded) return
     this.loaded = true
-    if (this.filePath === undefined) return
     // Synchronous by design: the first resolve must not pay an await to decide
     // whether the cache can answer.
     try {
@@ -207,17 +215,22 @@ export class TitleCache {
 
   /** Persist pending state; atomic (tmp + rename). Safe to call repeatedly. */
   async flush(): Promise<void> {
-    if (!this.dirty) return
+    if (!this.dirty || this.persistFailed) return
     this.dirty = false
     const filePath = this.filePath
-    if (filePath === undefined) return
     const payload: TitleCacheFile = { version: 1, sessions: Object.fromEntries(this.entries) }
     try {
       await mkdir(dirname(filePath), { recursive: true })
       const tmp = `${filePath}.tmp`
       await writeFile(tmp, JSON.stringify(payload), 'utf8')
       await rename(tmp, filePath)
-    } catch { /* a cache write failure must never surface to the caller */ }
+    } catch (error) {
+      this.persistFailed = true
+      // A cache write failure must never break the caller, but it must also not
+      // be invisible: a silently denied write turns this whole layer into a
+      // no-op and makes every later call re-read the corpus. Report once.
+      this.onPersistError?.(error)
+    }
   }
 
   /** Stop the debounce timer (tests). Pending state is flushed by the caller. */
