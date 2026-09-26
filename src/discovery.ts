@@ -1,17 +1,26 @@
 /**
- * Session discovery for the s2s seam. Primary source:
- * `ctx.sessionQuery.listSessions()` — the host's complete logical corpus (live
- * and persisted/dormant), which is what the GUI session list uses — plus
- * `ctx.sessionQuery.readTitle(sessionId)` for titles (live or persisted) and
- * `ctx.agents` for live state. Fallback (when the sessionQuery service is
- * unavailable): scan ${DSH_HOME || ~/.dsh}/sessions for on-disk session dirs.
+ * Session discovery for the s2s seam.
  *
- * Perf: per-session title reads are the expensive part, so enumeration runs
- * them with bounded concurrency (never a serial await loop), an exact
- * session_id resolve reads only that one title, and concurrent collects
- * coalesce onto a single in-flight scan. Titles are deliberately not cached —
- * address resolution always reads the freshest title (a rename is visible at
- * once), matching the documented addressing semantics.
+ * Title resolution is layered, cheapest first, and every layer is
+ * capability-probed so the plugin keeps working on hosts back to
+ * `0.1.0-rc.6`:
+ *
+ * - **L0** {@link TitleCache} — durable local cache (memory + one small JSON
+ *   file), consulted synchronously. The only cross-version accelerant; works
+ *   on every host.
+ * - **L1** `ctx.sessionProjectionCache.cachedSnapshot(header, ['title'])` —
+ *   the host's zero-I/O listing read (0.1.7+). A rename is visible at the next
+ *   durable checkpoint.
+ * - **L2** `sessionQuery.readTitleSnapshots(ids)` — one corpus observation for
+ *   many ids (0.1.7+).
+ * - **L3** `sessionQuery.readTitle(id)` — per-session observation; the only
+ *   path on hosts without the batch API (0.1.5 and below).
+ * - **L4** on-disk scan of `${DSH_HOME || ~/.dsh}/sessions` with multi-frame
+ *   zstd decoding; used when `sessionQuery` is unavailable.
+ *
+ * Enumeration still comes from `sessionQuery.listSessions()` (or the directory
+ * scan): the projection cache answers titles, not the corpus. Titles are
+ * retained in L0 so a later call answers from memory.
  * @module dsh-s2s/discovery
  */
 import { readdir, readFile } from 'node:fs/promises'
@@ -21,6 +30,7 @@ import { zstdDecompressSync } from 'node:zlib'
 import { Service, type Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { TitleCache } from './title-cache.ts'
 
 export interface S2sSessionInfo {
   readonly sessionId: string
@@ -41,6 +51,29 @@ interface SessionRecordLike { readonly header: { readonly id: unknown; readonly 
 interface SessionQueryLike {
   listSessions(): Promise<SessionRecordLike[]>
   readTitle(sessionId: unknown): Promise<{ readonly title?: string } | undefined>
+  /** Batch title fold; absent on hosts older than 0.1.7. */
+  readTitleSnapshots?(sessionIds: readonly unknown[]): Promise<readonly ({ readonly title?: string } | undefined)[]>
+}
+
+/**
+ * The host's durable projection cache (0.1.7+), reached structurally so this
+ * plugin needs no dependency on the package. Only `cachedSnapshot` is used:
+ * the documented zero-I/O listing read. It returns `undefined` whenever no
+ * usable row exists for the header's lifecycle — including after a session
+ * format change, which is why every caller must still fall through.
+ */
+interface SessionProjectionCacheLike {
+  cachedSnapshot(meta: unknown, keys?: readonly string[]): { readonly values?: { readonly title?: unknown } } | undefined
+}
+
+/** Discovery service config. */
+export interface S2sDiscoveryConfig {
+  /** Override the `${DSH_HOME}/sessions` scan root (tests, exotic layouts). */
+  readonly sessionsRoot?: string
+  /** Override the title-cache file path (tests). */
+  readonly cachePath?: string
+  /** Injectable clock for cache-age tests. */
+  readonly now?: () => number
 }
 
 /** Max concurrent title reads / log scans; bounds open FDs on a large corpus. */
@@ -64,18 +97,106 @@ async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) 
 
 export class S2sDiscoveryService extends Service {
   private queryService?: SessionQueryLike
+  private projectionCache?: SessionProjectionCacheLike
   private readonly sessionsRoot: string | undefined
+  private readonly cache: TitleCache
+  private readonly now: () => number
   /** In-flight full scan shared by concurrent callers; cleared as soon as it settles. */
   private inflight: Promise<S2sSessionInfo[]> | undefined
   static inject = ['agents']
 
-  constructor(ctx: Context, config?: { sessionsRoot?: string }) {
+  constructor(ctx: Context, config?: S2sDiscoveryConfig) {
     super(ctx, 's2sDiscovery')
     this.sessionsRoot = config?.sessionsRoot
-    // Optional dependency: bind only when the sessionQuery service exists.
+    this.cache = new TitleCache(config?.cachePath)
+    this.now = config?.now ?? Date.now
+    // Optional dependencies: bind only when the host provides them.
     ctx.inject(['sessionQuery'], (sctx) => {
       this.queryService = (sctx as unknown as { sessionQuery: SessionQueryLike }).sessionQuery
     })
+    ctx.inject(['sessionProjectionCache'], (sctx) => {
+      this.projectionCache = (sctx as unknown as { sessionProjectionCache: SessionProjectionCacheLike }).sessionProjectionCache
+    })
+  }
+
+  /** The durable title cache; exposed for tooling and tests. */
+  titleCache(): TitleCache {
+    return this.cache
+  }
+
+  /** E3: drop cached titles so the next resolve re-reads them. */
+  forgetCachedTitle(sessionId: string): void {
+    this.cache.forget(sessionId)
+  }
+
+  /**
+   * Resolve one session's title as cheaply as the host allows.
+   *
+   * Order: L0 cache → L1 projection cache → L2 batch (only when `batch` is
+   * supplied by the caller, so a bulk enumeration pays one observation) →
+   * L3 single read → L4 on-disk scan. A successful read is retained in L0, but
+   * a title-less result only is when `sessionDir` is known — otherwise every
+   * later call would re-read a genuinely untitled session.
+   *
+   * @param sessionId - exact session id.
+   * @param meta - the listing header, required for L1's lifecycle match.
+   * @param batch - a pre-read batch value for this id (L2), when one was taken.
+   * @param sessionDir - on-disk directory for the L4 fallback.
+   * @returns the title, or undefined when no layer produced one.
+   */
+  private async readTitleLayered(
+    sessionId: string,
+    meta?: unknown,
+    batch?: { readonly title?: string } | undefined,
+    sessionDir?: string,
+    workspaceDir?: string,
+  ): Promise<string | undefined> {
+    const cached = this.cache.get(sessionId, this.now()) // E1/E4
+    if (cached !== undefined) return cached.title
+
+    let title: string | undefined
+    let read = false
+
+    // L1: zero-I/O listing read.
+    const projection = this.projectionCache
+    if (!read && projection !== undefined && typeof projection.cachedSnapshot === 'function' && meta !== undefined) {
+      try {
+        const snapshot = projection.cachedSnapshot(meta, ['title'])
+        const value = snapshot?.values?.title
+        if (typeof value === 'string' && value.length > 0) {
+          title = value
+          read = true
+        } else if (snapshot !== undefined) {
+          read = true // a cached row exists and holds no title: a real answer
+        }
+      } catch { /* fall through to the read layers */ }
+    }
+
+    // L2: a batch fold the caller already took.
+    if (!read && batch !== undefined) {
+      title = batch.title
+      read = true
+    }
+
+    // L3: single-session observation.
+    const query = this.queryService
+    if (!read && query !== undefined && typeof query.readTitle === 'function') {
+      try {
+        title = (await query.readTitle(SessionId(sessionId)))?.title
+        read = true
+      } catch { /* fall through to the on-disk scan */ }
+    }
+
+    // L4: read the log ourselves.
+    if (!read && sessionDir !== undefined) {
+      title = await this.readTitleFromFs(sessionDir)
+      read = true
+    }
+
+    if (read && (title !== undefined || sessionDir !== undefined)) {
+      this.cache.set(sessionId, title, this.now(), workspaceDir)
+    }
+    return title
   }
 
   liveAgent(sessionId: string): Agent | undefined {
@@ -93,16 +214,53 @@ export class S2sDiscoveryService extends Service {
 
   async resolve(name: string | undefined, sessionId: string | undefined): Promise<S2sResolveResult> {
     if (sessionId !== undefined && sessionId.length > 0) {
+      // L0 fast path: a cached hit that knows its workspace answers with no
+      // enumeration and no read at all.
+      const cached = this.cache.get(sessionId, this.now())
+      if (cached !== undefined && cached.workspaceDir !== undefined) {
+        return toOk({
+          sessionId,
+          ...(cached.title === undefined ? {} : { title: cached.title }),
+          state: this.stateOf(sessionId),
+          workspaceDir: cached.workspaceDir,
+        })
+      }
       // Fast path: an exact id needs only that session's title, not the corpus.
       const exact = await this.collectById(sessionId)
       if (exact !== undefined) return toOk(exact)
     }
-    const infos = await this.collect()
+
+    // L0 fast path for name addressing: exactly one cached session owns this
+    // name, so answer without enumerating. Two or more cached owners means the
+    // name may be ambiguous — fall through to the corpus for a real verdict.
     const needle = name?.trim().toLowerCase()
+    if (needle !== undefined && needle.length > 0) {
+      const owners = this.cache.findByName(needle)
+      if (owners.length === 1) {
+        const cached = this.cache.get(owners[0]!, this.now())
+        if (cached?.workspaceDir !== undefined) {
+          return toOk({
+            sessionId: owners[0]!,
+            ...(cached.title === undefined ? {} : { title: cached.title }),
+            state: this.stateOf(owners[0]!),
+            workspaceDir: cached.workspaceDir,
+          })
+        }
+      } else if (owners.length > 1) {
+        // E2: record the collision so it is not answered from cache again.
+        for (const owner of owners) this.cache.markAmbiguous(owner, this.now())
+      }
+    }
+
+    const infos = await this.collect()
     if (needle === undefined || needle.length === 0) return { kind: 'not-found', name: name ?? '', candidates: infos.map(toCandidate) }
     const matches = infos.filter(info => info.title?.trim().toLowerCase() === needle)
     if (matches.length === 0) return { kind: 'not-found', name: name ?? '', candidates: infos.map(toCandidate) }
-    if (matches.length > 1) return { kind: 'ambiguous', name: name ?? '', candidates: matches.map(toCandidate) }
+    if (matches.length > 1) {
+      // E2: remember the ambiguity so the cache never resolves this name alone.
+      for (const match of matches) this.cache.markAmbiguous(match.sessionId, this.now())
+      return { kind: 'ambiguous', name: name ?? '', candidates: matches.map(toCandidate) }
+    }
     return toOk(matches[0]!)
   }
 
@@ -138,8 +296,9 @@ export class S2sDiscoveryService extends Service {
         const records = await query.listSessions()
         const record = records.find(entry => String(entry.header.id) === sessionId)
         if (record === undefined) return undefined
-        let title: string | undefined
-        try { title = (await query.readTitle(SessionId(sessionId)))?.title } catch { title = undefined }
+        // L1 answers from the host's projection cache; L0 may answer with no
+        // enumeration at all on a repeat call (handled by resolve()).
+        const title = await this.readTitleLayered(sessionId, record.header, undefined, undefined, record.header.cwd)
         return toInfo(record, sessionId, title, this.stateOf(sessionId))
       } catch { /* fall through to the full scan */ }
     }
@@ -147,12 +306,70 @@ export class S2sDiscoveryService extends Service {
     return infos.find(entry => entry.sessionId === sessionId)
   }
 
+  /**
+   * Enumerate from `sessionQuery`. Titles come from L1 per record; records the
+   * projection cache does not answer are folded in one L2 batch observation
+   * when the host exposes `readTitleSnapshots`, otherwise read one by one (L3).
+   */
   private async collectFromQuery(query: SessionQueryLike): Promise<S2sSessionInfo[]> {
     const records = await query.listSessions()
+    // L0 short-circuit: cache hits need no read at all.
+    const pending: SessionRecordLike[] = []
+    const titles = new Map<string, string | undefined>()
+    for (const record of records) {
+      const sessionId = String(record.header.id)
+      const cached = this.cache.get(sessionId, this.now())
+      if (cached !== undefined) titles.set(sessionId, cached.title)
+      else pending.push(record)
+    }
+
+    // L1 for everything still unresolved; only true misses go to L2.
+    const misses: SessionRecordLike[] = []
+    if (this.projectionCache !== undefined && typeof this.projectionCache.cachedSnapshot === 'function') {
+      for (const record of pending) {
+        const sessionId = String(record.header.id)
+        let answered = false
+        try {
+          const snapshot = this.projectionCache.cachedSnapshot(record.header, ['title'])
+          const value = snapshot?.values?.title
+          if (typeof value === 'string' && value.length > 0) {
+            titles.set(sessionId, value)
+            this.cache.set(sessionId, value, this.now(), record.header.cwd)
+            answered = true
+          } else if (snapshot !== undefined) {
+            // A cached row with no title is a real answer, not a miss.
+            titles.set(sessionId, undefined)
+            this.cache.set(sessionId, undefined, this.now(), record.header.cwd)
+            answered = true
+          }
+        } catch { /* treat as a miss and read */ }
+        if (!answered) misses.push(record)
+      }
+    } else {
+      misses.push(...pending)
+    }
+
+    // L2: one corpus observation for every remaining id, when supported.
+    if (misses.length > 0 && typeof query.readTitleSnapshots === 'function') {
+      const ids = misses.map(record => SessionId(String(record.header.id)))
+      try {
+        const results = await query.readTitleSnapshots(ids)
+        misses.forEach((record, index) => {
+          const sessionId = String(record.header.id)
+          const title = results[index]?.title
+          titles.set(sessionId, title)
+          this.cache.set(sessionId, title, this.now(), record.header.cwd)
+        })
+      } catch { /* fall through to per-session reads below */ }
+    }
+
     return mapLimit(records, READ_CONCURRENCY, async (record): Promise<S2sSessionInfo> => {
       const sessionId = String(record.header.id)
-      let title: string | undefined
-      try { title = (await query.readTitle(SessionId(sessionId)))?.title } catch { title = undefined }
+      if (titles.has(sessionId)) {
+        return toInfo(record, sessionId, titles.get(sessionId), this.stateOf(sessionId))
+      }
+      // L3: per-session observation (the only path on pre-0.1.7 hosts).
+      const title = await this.readTitleLayered(sessionId)
       return toInfo(record, sessionId, title, this.stateOf(sessionId))
     })
   }
@@ -173,7 +390,13 @@ export class S2sDiscoveryService extends Service {
     }
     return mapLimit(targets, READ_CONCURRENCY, async ({ workspaceDir, entry }): Promise<S2sSessionInfo> => {
       const sessionId = entry.slice('session-'.length)
-      const title = await this.readTitleFromFs(join(root, workspaceDir, entry))
+      // L0 first: on hosts with no sessionQuery this is the whole acceleration.
+      const cached = this.cache.get(sessionId, this.now())
+      let title = cached?.title
+      if (cached === undefined) {
+        title = await this.readTitleLayered(sessionId, undefined, undefined, join(root, workspaceDir, entry))
+        this.cache.set(sessionId, title, this.now(), workspaceDir)
+      }
       return { sessionId, ...(title === undefined ? {} : { title }), workspaceDir, state: this.stateOf(sessionId) }
     })
   }
