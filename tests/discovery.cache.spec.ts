@@ -38,7 +38,15 @@ function countingQuery(records: unknown[], titles: Record<string, string>, opts:
 
 interface HarnessOptions {
   /** Ids whose cached row exists but holds no usable title. */
-  projection?: { hits: Record<string, string>; titleLess?: readonly string[]; misses?: readonly string[]; calls?: string[]; present?: boolean }
+  projection?: {
+    hits: Record<string, string>
+    titleLess?: readonly string[]
+    misses?: readonly string[]
+    calls?: string[]
+    present?: boolean
+    /** Ids whose title is only reachable through cachedPredecessorTitle. */
+    predecessorOnly?: readonly string[]
+  }
   batch?: boolean
   now?: () => number
 }
@@ -59,8 +67,18 @@ async function harness(records: unknown[], titles: Record<string, string>, opts:
         // a title-less row is an answer, not a miss.
         if (opts.projection!.misses?.includes(id) === true) return undefined
         if (opts.projection!.titleLess?.includes(id) === true) return { asOfSeq: 1, values: {} }
+        if (opts.projection!.predecessorOnly?.includes(id) === true) return undefined
         if (!Object.hasOwn(hits, id)) return undefined
         return { asOfSeq: 1, values: hits[id] !== undefined ? { title: hits[id] } : {} }
+      },
+      // Predecessor-only titles: the current checkpoint has no row, so this face
+      // is what keeps the session off the per-session read path.
+      cachedPredecessorTitle: (meta: unknown) => {
+        const id = String((meta as { id: unknown }).id)
+        if (opts.projection!.misses?.includes(id) === true) return undefined
+        return opts.projection!.predecessorOnly?.includes(id) === true
+          ? { asOfSeq: 1, values: hits[id] !== undefined ? { title: hits[id] } : {} }
+          : undefined
       },
     })
   }
@@ -306,5 +324,40 @@ describe('title cache persistence reporting', () => {
     } finally {
       if (saved !== undefined) process.env.DSH_HOME = saved
     }
+  })
+})
+
+// The host's own session list consults two faces:
+//   cachedSnapshot(header) ?? cachedPredecessorTitle(header)
+// Using only the first left every session whose current checkpoint has no title
+// row on the per-session read path — ~119 of 238 in a measured corpus, each a
+// ~39 ms full-log fold.
+describe('L1 predecessor fallback', () => {
+  it('answers from cachedPredecessorTitle when the current checkpoint has no title row', async () => {
+    const { d, counts } = await harness([rec('a', '/w'), rec('b', '/w')], { a: '前任甲', b: '现任乙' }, {
+      projection: { hits: { a: '前任甲', b: '现任乙' }, predecessorOnly: ['a'] },
+    })
+    const list = await d.list()
+    expect(list.map(s => s.title)).toEqual(['前任甲', '现任乙'])
+    // No per-session read at all: both were answered by the projection cache.
+    expect(counts.readTitle).toBe(0)
+  })
+
+  it('a title-less predecessor row is still an answer, not a miss', async () => {
+    const { d, counts } = await harness([rec('a', '/w')], {}, {
+      projection: { hits: {}, predecessorOnly: ['a'] },
+    })
+    const list = await d.list()
+    expect(list[0]!.title).toBeUndefined()
+    expect(counts.readTitle).toBe(0)
+  })
+
+  it('falls to a per-session read only when neither face answers', async () => {
+    const { d, counts } = await harness([rec('a', '/w'), rec('b', '/w')], { b: '只有读取能给' }, {
+      projection: { hits: { b: '只有读取能给' }, predecessorOnly: ['a'], misses: ['a'] },
+    })
+    const list = await d.list()
+    expect(list.map(s => s.title)).toEqual([undefined, '只有读取能给'])
+    expect(counts.readTitle).toBe(1) // only the genuinely unanswerable one
   })
 })

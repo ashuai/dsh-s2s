@@ -60,13 +60,30 @@ interface SessionQueryLike {
 
 /**
  * The host's durable projection cache (0.1.7+), reached structurally so this
- * plugin needs no dependency on the package. Only `cachedSnapshot` is used:
- * the documented zero-I/O listing read. It returns `undefined` whenever no
- * usable row exists for the header's lifecycle — including after a session
- * format change, which is why every caller must still fall through.
+ * plugin needs no dependency on the package.
+ *
+ * Both faces are used, mirroring what the host's own session list does
+ * (`dsh-api-session-controller`: `cachedSnapshot(header) ??
+ * cachedPredecessorTitle(header)`):
+ *
+ * - `cachedSnapshot` — the documented zero-I/O listing read of the *current*
+ *   checkpoint's rows;
+ * - `cachedPredecessorTitle` — a title-only block from a *predecessor*
+ *   checkpoint, for the sessions whose current checkpoint carries no title row.
+ *
+ * Using only the first face was a real defect: every session it could not
+ * answer fell through to a per-session `readTitle`, which loads and folds that
+ * session's whole log (~39 ms each). Measured against a 238-session corpus that
+ * was ~119 fallbacks and a 4.7 s enumeration.
  */
 interface SessionProjectionCacheLike {
-  cachedSnapshot(meta: unknown, keys?: readonly string[]): { readonly values?: { readonly title?: unknown } } | undefined
+  cachedSnapshot(meta: unknown, keys?: readonly string[]): ProjectionView | undefined
+  cachedPredecessorTitle?(meta: unknown): ProjectionView | undefined
+}
+
+/** The shared shape of both projection-cache faces. */
+interface ProjectionView {
+  readonly values?: { readonly title?: unknown }
 }
 
 /** Discovery service config. */
@@ -152,7 +169,12 @@ export class S2sDiscoveryService extends Service {
     const projection = this.projectionCache
     if (projection === undefined || typeof projection.cachedSnapshot !== 'function') return undefined
     try {
+      // Current checkpoint first, then the predecessor title — the same two
+      // faces, in the same order, that the host's own session list consults.
+      // Without the second, a session whose current checkpoint has no title row
+      // falls all the way through to a full per-session log read.
       const snapshot = projection.cachedSnapshot(meta, ['title'])
+        ?? (typeof projection.cachedPredecessorTitle === 'function' ? projection.cachedPredecessorTitle(meta) : undefined)
       if (snapshot === undefined) return undefined
       const value = snapshot.values?.title
       return { title: typeof value === 'string' && value.length > 0 ? value : undefined }
