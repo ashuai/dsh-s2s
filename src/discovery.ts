@@ -17,7 +17,7 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import zlib from 'node:zlib'
+import { zstdDecompressSync } from 'node:zlib'
 import { Service, type Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -187,12 +187,11 @@ export class S2sDiscoveryService extends Service {
     try {
       const z = await readFile(join(sessionDir, 'session.jsonl.zstd')).catch(() => undefined)
       if (z !== undefined) {
-        const text = await decompressZstdAll(z)
-        const title = latestTitleFromJsonl(text)
+        const title = latestTitleFromZstd(z)
         if (title !== undefined) return title
       }
       const plain = await readFile(join(sessionDir, 'session.jsonl'), 'utf8').catch(() => undefined)
-      if (plain !== undefined) return latestTitleFromJsonl(plain)
+      if (plain !== undefined) return titleFromJsonl(plain)
     } catch {}
     return undefined
   }
@@ -211,20 +210,92 @@ function toOk(info: S2sSessionInfo): S2sResolveResult {
   return { kind: 'ok', sessionId: info.sessionId, ...(info.title === undefined ? {} : { title: info.title }), state: info.state, workspaceDir: info.workspaceDir }
 }
 
-/** Fully decompress a concatenated-zstd log (append-only multi-frame). */
-function decompressZstdAll(buf: Buffer): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = []
-    const dec = zlib.createZstdDecompress()
-    dec.on('data', (c: Buffer) => chunks.push(c))
-    dec.on('error', reject)
-    dec.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
-    dec.end(buf)
-  })
+/** Zstandard frame magic, little-endian `28 B5 2F FD`. */
+const ZSTD_MAGIC = 0xfd2fb528
+
+interface ZstdFrame {
+  readonly start: number
+  readonly end: number
 }
 
-/** Latest `session/title` title over one JSONL log text; undefined if none. */
-function latestTitleFromJsonl(text: string): string | undefined {
+/**
+ * Locate every complete Zstandard frame in a concatenated log without decoding
+ * its blocks. Session logs are append-only: each append is its own frame, so a
+ * real log holds thousands of frames.
+ *
+ * A structurally invalid complete frame throws (the caller degrades to "no
+ * title"); EOF inside the final frame returns its start as `tornStart` and
+ * stops, so a crash-truncated log still yields every frame written before it.
+ *
+ * @param buf - the complete bytes currently on disk.
+ * @returns complete frame ranges, plus the start of an optional incomplete tail.
+ */
+function scanZstdFrames(buf: Buffer): { frames: ZstdFrame[]; tornStart?: number } {
+  const frames: ZstdFrame[] = []
+  let offset = 0
+  while (offset < buf.length) {
+    const start = offset
+    if (buf.length - offset < 4) return { frames, tornStart: start }
+    if (buf.readUInt32LE(offset) !== ZSTD_MAGIC) throw new Error(`invalid Zstandard frame magic at byte ${offset}`)
+    offset += 4
+    if (offset === buf.length) return { frames, tornStart: start }
+    const descriptor = buf.readUInt8(offset)
+    offset += 1
+    if ((descriptor & 0x18) !== 0) throw new Error(`reserved Zstandard frame-header bit at byte ${offset - 1}`)
+    const contentSizeFlag = descriptor >>> 6
+    const singleSegment = (descriptor & 0x20) !== 0
+    const checksum = (descriptor & 0x04) !== 0
+    const dictionaryFlag = descriptor & 0x03
+    const dictionaryBytes = dictionaryFlag === 3 ? 4 : dictionaryFlag
+    const contentSizeBytes = contentSizeFlag === 0 ? (singleSegment ? 1 : 0) : 1 << contentSizeFlag
+    const remainingHeaderBytes = (singleSegment ? 0 : 1) + dictionaryBytes + contentSizeBytes
+    if (buf.length - offset < remainingHeaderBytes) return { frames, tornStart: start }
+    offset += remainingHeaderBytes
+    for (;;) {
+      if (buf.length - offset < 3) return { frames, tornStart: start }
+      const blockHeader = buf.readUIntLE(offset, 3)
+      offset += 3
+      const lastBlock = (blockHeader & 1) !== 0
+      const blockType = (blockHeader >>> 1) & 0x03
+      const blockSize = blockHeader >>> 3
+      if (blockType === 3) throw new Error(`reserved Zstandard block type at byte ${offset - 3}`)
+      const payloadBytes = blockType === 1 ? 1 : blockSize
+      if (buf.length - offset < payloadBytes) return { frames, tornStart: start }
+      offset += payloadBytes
+      if (lastBlock) break
+    }
+    if (checksum) {
+      if (buf.length - offset < 4) return { frames, tornStart: start }
+      offset += 4
+    }
+    frames.push({ start, end: offset })
+  }
+  return { frames }
+}
+
+/**
+ * Latest `session/title` over a concatenated-zstd log (append-only
+ * multi-frame), or undefined when the log is absent, empty, corrupt, or has no
+ * title event.
+ *
+ * Frames are decoded one at a time and only the latest title is retained, so a
+ * large log never materializes as one giant string. A single frame failing to
+ * decode throws (the caller falls back to "no title"), matching the previous
+ * all-or-nothing behavior.
+ */
+function latestTitleFromZstd(buf: Buffer): string | undefined {
+  const { frames } = scanZstdFrames(buf)
+  let title: string | undefined
+  for (const frame of frames) {
+    const text = zstdDecompressSync(buf.subarray(frame.start, frame.end)).toString('utf8')
+    const found = titleFromJsonl(text)
+    if (found !== undefined) title = found
+  }
+  return title
+}
+
+/** Latest `session/title` title over one frame of JSONL; undefined if none. */
+function titleFromJsonl(text: string): string | undefined {
   let title: string | undefined
   for (const line of text.split('\n')) {
     if (line.length === 0) continue

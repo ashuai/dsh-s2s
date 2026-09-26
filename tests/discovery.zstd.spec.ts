@@ -53,4 +53,53 @@ describe('s2s discovery zstd log path', () => {
     expect(list[0]!.title).toBeUndefined()
     await d.ctx.fiber.dispose()
   })
+
+  // Session logs are append-only: every append is its own zstd frame, so a real
+  // log holds thousands of frames. A single-stream decoder silently returns
+  // only the first frame, which made every on-disk title unreadable.
+  it('reads the title from the LAST frame of a multi-frame log', async () => {
+    const root = await mkdtemp(join(tmpdir(), 's2s-z-'))
+    dirs.push(root)
+    const sdir = join(root, 'ws-a', 'session-z4')
+    await mkdir(sdir, { recursive: true })
+    const frames = ['first', 'second', 'third'].map((name, i) =>
+      zlib.zstdCompressSync(Buffer.from(`{"type":"session/title","data":{"title":"${name}-${i}"}}\n`, 'utf8')))
+    await writeFile(join(sdir, 'session.jsonl.zstd'), Buffer.concat(frames))
+    const d = await mount(root)
+    const list = await d.list()
+    expect(list.length).toBe(1)
+    expect(list[0]!.title).toBe('third-2')
+    await d.ctx.fiber.dispose()
+  })
+
+  it('reads a title from a log of many frames', async () => {
+    const root = await mkdtemp(join(tmpdir(), 's2s-z-'))
+    dirs.push(root)
+    const sdir = join(root, 'ws-a', 'session-z5')
+    await mkdir(sdir, { recursive: true })
+    const frames: Buffer[] = []
+    for (let i = 0; i < 512; i++) {
+      frames.push(zlib.zstdCompressSync(Buffer.from(`{"type":"session/note","data":{"n":${i}}}\n`, 'utf8')))
+    }
+    frames.push(zlib.zstdCompressSync(Buffer.from('{"type":"session/title","data":{"title":"末帧标题"}}\n', 'utf8')))
+    await writeFile(join(sdir, 'session.jsonl.zstd'), Buffer.concat(frames))
+    const d = await mount(root)
+    const list = await d.list()
+    expect(list[0]!.title).toBe('末帧标题')
+    await d.ctx.fiber.dispose()
+  })
+
+  it('recovers the title when the final frame is torn off', async () => {
+    const root = await mkdtemp(join(tmpdir(), 's2s-z-'))
+    dirs.push(root)
+    const sdir = join(root, 'ws-a', 'session-z6')
+    await mkdir(sdir, { recursive: true })
+    const complete = zlib.zstdCompressSync(Buffer.from('{"type":"session/title","data":{"title":"完整帧"}}\n', 'utf8'))
+    const torn = zlib.zstdCompressSync(Buffer.from('{"type":"session/title","data":{"title":"截断帧"}}\n', 'utf8')).subarray(0, 12)
+    await writeFile(join(sdir, 'session.jsonl.zstd'), Buffer.concat([complete, torn]))
+    const d = await mount(root)
+    const list = await d.list()
+    expect(list[0]!.title).toBe('完整帧')
+    await d.ctx.fiber.dispose()
+  })
 })
