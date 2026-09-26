@@ -26,14 +26,31 @@ function labelOf(r: Extract<S2sResolveResult, { kind: 'ok' }>): string {
   return r.title ?? r.sessionId
 }
 
+/**
+ * Short display form of a session id.
+ *
+ * A real session id is the full `session-<uuid>` string — that exact form is
+ * what `ctx.agents.get(SessionId(...))`, the mailbox path, and
+ * `registry.resume({ resumeSessionId })` all require, so it is never rewritten.
+ * For display we drop the `session-` container prefix first: slicing the raw
+ * string would show `session-` for every titled session (the uuid starts at
+ * offset 8), which is what a display bug looked like.
+ *
+ * @param sessionId - the canonical, prefixed session id.
+ * @returns the first 8 characters of the uuid part.
+ */
+function shortId(sessionId: string): string {
+  return sessionId.replace(/^session-/, '').slice(0, 8)
+}
+
 function describeCandidates(cands: { title?: string; sessionId: string; state: string; workspaceDir: string }[]): string[] {
-  return cands.map(function(c) { return '- ' + (c.title ?? '(untitled)') + ' [' + c.sessionId.slice(0, 8) + '] ' + c.state + ' ws=' + c.workspaceDir })
+  return cands.map(function(c) { return '- ' + (c.title ?? '(untitled)') + ' [' + shortId(c.sessionId) + '] ' + c.state + ' ws=' + c.workspaceDir })
 }
 
 function displayResolve(resolved: Extract<S2sResolveResult, { kind: 'not-found' | 'ambiguous' }>): string {
   if (resolved.kind === 'not-found') {
     const lines = resolved.candidates.length === 0 ? ['No sessions match.'] : describeCandidates(resolved.candidates)
-    return 'No session named "' + resolved.name + '" (renames take effect immediately; list actual names with s2s_sessions).\n' + lines.join('\n')
+    return 'No session named "' + resolved.name + '" (a rename becomes visible after the next title checkpoint; list actual names with s2s_sessions).\n' + lines.join('\n')
   }
   return 'Multiple sessions named "' + resolved.name + '". Disambiguate with session_id:\n' + resolved.candidates.map(function(c) { return '- ' + c.sessionId + ' (' + c.workspaceDir + ')' }).join('\n')
 }
@@ -84,7 +101,7 @@ export function buildTools(deps: { broker: S2sBroker; discovery: S2sDiscoverySer
         const scoped = args.all === true ? infos : sameProjectAsCaller(infos, exec)
         const sessions = scoped.filter(function(s) { return s.state !== 'dormant' })
         if (sessions.length === 0) return { text: 'No live sessions.' }
-        return { text: sessions.map(function(s) { return (s.title ?? '(untitled)') + '  [' + s.sessionId.slice(0, 8) + ']  ' + s.state }).join('\n') }
+        return { text: sessions.map(function(s) { return (s.title ?? '(untitled)') + '  [' + shortId(s.sessionId) + ']  ' + s.state }).join('\n') }
       },
     }),
     defineTool({
@@ -102,7 +119,7 @@ export function buildTools(deps: { broker: S2sBroker; discovery: S2sDiscoverySer
           ? scoped
           : scoped.filter(function(s) { const needle = (args.query as string).toLowerCase(); return (s.title ?? '').toLowerCase().includes(needle) || s.sessionId.toLowerCase().includes(needle) || s.workspaceDir.toLowerCase().includes(needle) })
         if (sessions.length === 0) return { text: 'No sessions found.' }
-        return { text: sessions.map(function(s) { return (s.title ?? '(untitled)') + '  [' + s.sessionId.slice(0, 8) + ']  ' + s.state + '  ws=' + s.workspaceDir + (s.lastActivity === undefined ? '' : '  last=' + new Date(s.lastActivity).toISOString()) }).join('\n') }
+        return { text: sessions.map(function(s) { return (s.title ?? '(untitled)') + '  [' + shortId(s.sessionId) + ']  ' + s.state + '  ws=' + s.workspaceDir + (s.lastActivity === undefined ? '' : '  last=' + new Date(s.lastActivity).toISOString()) }).join('\n') }
       },
     }),
     defineTool({
@@ -196,7 +213,7 @@ export function buildTools(deps: { broker: S2sBroker; discovery: S2sDiscoverySer
         if (args.action === 'list') {
           const jobs = await schedule.list()
           if (jobs.length === 0) return { text: 'No scheduled jobs.' }
-          return { text: jobs.map(function(j) { return '- ' + j.id + ' [' + j.targetSessionId.slice(0, 8) + '] ' + (j.everySeconds !== undefined ? 'every ' + j.everySeconds + 's' : 'at ' + (j.atIso ?? '')) + (j.enabled ? '' : ' (disabled)') }).join('\n') }
+          return { text: jobs.map(function(j) { return '- ' + j.id + ' [' + shortId(j.targetSessionId) + '] ' + (j.everySeconds !== undefined ? 'every ' + j.everySeconds + 's' : 'at ' + (j.atIso ?? '')) + (j.enabled ? '' : ' (disabled)') }).join('\n') }
         }
         if (args.action === 'create') {
           if (args.text === undefined || args.text.length === 0) return { text: 'create needs a text.' }

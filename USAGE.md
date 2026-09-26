@@ -49,7 +49,7 @@
 
 1. `s2s_sessions` 看每个会话的**标题**(即你改的名,如「开发」),不用记 id;**默认只列当前项目**,要看别的项目加 `all: true`(`s2s_message`/`s2s_resume` 仍可按 name/session_id 跨项目点名)。
 2. `s2s_resume` `{ name: "开发", text, from? }`:
-   - **标题是用户可随时改的**,但解析读的是**缓存的标题**(宿主投影缓存或本地缓存),所以**改名在下一个标题检查点后生效**,不是同一瞬间。缓存新鲜度上限 24h(`title-cache.ts` 的 `TITLE_TTL_MS`)。要立刻点名刚改名的会话,用它的 `session_id`。
+   - **标题是用户可随时改的**,但解析读的是**缓存的标题**(宿主的零 I/O 投影缓存,`sessionProjectionCache.cachedSnapshot`),所以**改名在下一个标题检查点后生效**,不是同一瞬间;这正是把"每个会话都读一遍日志"从寻址里去掉的代价。要立刻点名刚改名的会话,用它的完整 `session_id`(形如 `session-<uuid>`)。
    - `autoResume=allow`:拉起会话 → `agent.followup`(空闲)/`inject`(忙碌)投递 → 清空信箱。
    - `autoResume=deny`:仅入信箱 `~/.dsh/s2s/mailboxes/<sessionId>/*.json`,会话重开时自动 drain。
    - **同名冲突**:返回 ambiguous + 候选列表,用 `session_id` 精确点名;无匹配:返回 not-found + 所有带标题会话供选。

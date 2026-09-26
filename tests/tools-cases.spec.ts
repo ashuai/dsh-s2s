@@ -208,3 +208,58 @@ describe('s2s tools execution', () => {
     expect(out.text).toContain('cancel needs a job_id')
   })
 })
+// A real session id is the full `session-<uuid>` string. Every consumer of the
+// canonical form (agent registry lookup, mailbox path, resume) needs exactly
+// that, so the tools must never rewrite it — but the SHORT display form has to
+// drop the `session-` container prefix first. Slicing the raw id showed
+// `session-` for every titled session, which is what this pins down.
+describe('s2s short-id display', () => {
+  const FULL = 'session-094e7104-7a6b-4c92-90e8-fa4c9767d61f'
+
+  it('s2s_sessions shows the uuid prefix, not the "session-" container', async () => {
+    const { by } = makeTools({
+      discovery: { list: vi.fn(async () => [{ sessionId: FULL, title: 's2s test', state: 'live-busy', workspaceDir: '/w' }]) },
+    })
+    const out = await by('s2s_sessions').execute({}, {})
+    expect(out.text).toContain('[094e7104]')
+    expect(out.text).not.toContain('[session-]')
+  })
+
+  it('s2s_peers shows the uuid prefix too', async () => {
+    const { by } = makeTools({
+      discovery: { list: vi.fn(async () => [{ sessionId: FULL, title: 's2s test', state: 'live-idle', workspaceDir: '/w' }]) },
+    })
+    const out = await by('s2s_peers').execute({}, {})
+    expect(out.text).toContain('[094e7104]')
+  })
+
+  it('candidate lists in a not-found reply use the uuid prefix', async () => {
+    const { by } = makeTools({
+      discovery: { resolve: vi.fn(async () => ({
+        kind: 'not-found', name: 'nope',
+        candidates: [{ sessionId: FULL, title: 'x', state: 'dormant', workspaceDir: '/w' }],
+      })) },
+    })
+    const out = await by('s2s_message').execute({ name: 'nope', text: 't' }, { agent: { id: 'me' } })
+    expect(out.text).toContain('[094e7104]')
+    expect(out.text).not.toContain('[session-]')
+  })
+
+  it('the id handed to the broker stays the full canonical form', async () => {
+    const deliver = vi.fn(() => 'idle' as const)
+    const { by } = makeTools({
+      broker: { deliver, history: vi.fn(() => []) },
+      discovery: { resolve: vi.fn(async () => ({ kind: 'ok', sessionId: FULL, title: 's2s test', state: 'live-idle', workspaceDir: '/w' })) },
+    })
+    await by('s2s_message').execute({ name: 's2s test', text: 'hi' }, { agent: { id: 'me' } })
+    expect(deliver).toHaveBeenCalledWith(FULL, expect.objectContaining({ text: 'hi' }))
+  })
+
+  it('s2s_schedule shows the uuid prefix for its target', async () => {
+    const { by } = makeTools({
+      schedule: { list: vi.fn(async () => [{ id: 'j1', targetSessionId: FULL, enabled: true, atIso: '2026-01-01T00:00:00Z' }]) },
+    })
+    const out = await by('s2s_schedule').execute({ action: 'list' }, {})
+    expect(out.text).toContain('[094e7104]')
+  })
+})
