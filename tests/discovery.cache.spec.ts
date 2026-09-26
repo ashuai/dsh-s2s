@@ -187,16 +187,17 @@ describe('s2s discovery capability layers', () => {
     expect(counts.batch).toBe(0)
   })
 
-  it('L1 miss falls to L2 as exactly one batch observation', async () => {
-    const { d, counts } = await harness([rec('a', '/w'), rec('b', '/w'), rec('c', '/w')], { b: 'batched' }, {
+  it('L1 miss falls to one per-session read for each miss only', async () => {
+    // There is deliberately no batch layer: the host's batch title fold
+    // (`readTitleSnapshots`) was measured at the same cost as N single reads
+    // (it loads every log either way), so only L1's zero-I/O rows are used.
+    const { d, counts } = await harness([rec('a', '/w'), rec('b', '/w'), rec('c', '/w')], { b: 'by-read', c: 'by-read-2' }, {
       projection: { hits: { a: 'cached' }, misses: ['b', 'c'] },
     })
     const list = await d.list()
-    expect(list.map(s => s.title)).toEqual(['cached', 'batched', undefined])
-    expect(counts.batch).toBe(1)
-    expect(counts.batchSizes[0]).toBe(2) // only the two misses
-    expect(counts.readTitle).toBe(0)
-    expect(counts.batch + counts.readTitle).toBe(1)
+    expect(list.map(s => s.title)).toEqual(['cached', 'by-read', 'by-read-2'])
+    expect(counts.readTitle).toBe(2) // only the two L1 misses
+    expect(counts.batch).toBe(0) // no batch layer is consulted
   })
 
   it('L1 absence of a title row is an answer, not a miss', async () => {

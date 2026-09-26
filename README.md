@@ -22,7 +22,7 @@
 ## 功能一览
 
 - **进程内投递**:`S2sBroker.deliver(sessionId, {from,text})` → `ctx.agents.get(...)` → `agent.followup`(空闲)/`inject`(忙碌)。零网络、零序列化。
-- **name 主寻址**:`s2s_resume(name: "开发", ...)` / `s2s_message(name: "产品", ...)`;每次解析**现读会话最新标题**(日志 `session/title` 事件),改名即刻生效;同名→`ambiguous`(用 `session_id` 消歧),查无→`not-found`+候选。
+- **name 主寻址**:`s2s_resume(name: "开发", ...)` / `s2s_message(name: "产品", ...)`;标题取自**标题缓存**(0.1.7+ 读宿主的零 I/O 投影缓存,其余宿主读本地缓存),因此**改名在下一个标题检查点后生效**,而非同一瞬间;同名→`ambiguous`(用 `session_id` 消歧),查无→`not-found`+候选。
 - **拉起静止会话**:入信箱 → `autoResume=allow` 时 `AgentRegistry.resume` 拉起 → 投递;拉起的会话保留 live-idle(不自动归眠)。
 - **6 个模型工具**:`s2s_peers`(本项目 live)/ `s2s_sessions`(本项目 标题+三态;`all=true` 全量)/ `s2s_message`(发/唤醒)/ `s2s_resume`(显式唤醒)/ `s2s_history`(进程作用域历史)/ `s2s_schedule`(会话内定时注入)。
 - **持久信箱**:`~/.dsh/s2s/mailboxes/<sessionId>/*.json`,原子写、时序命名、损坏自愈。

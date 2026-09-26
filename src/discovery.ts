@@ -11,16 +11,21 @@
  * - **L1** `ctx.sessionProjectionCache.cachedSnapshot(header, ['title'])` —
  *   the host's zero-I/O listing read (0.1.7+). A rename is visible at the next
  *   durable checkpoint.
- * - **L2** `sessionQuery.readTitleSnapshots(ids)` — one corpus observation for
- *   many ids (0.1.7+).
- * - **L3** `sessionQuery.readTitle(id)` — per-session observation; the only
- *   path on hosts without the batch API (0.1.5 and below).
+ * - **L3** `sessionQuery.readTitle(id)` — a per-session observation that loads
+ *   and folds that session's whole log. This is what made an enumeration cost
+ *   ~94 ms per session; kept as the fallback for hosts without the projection
+ *   cache (0.1.5 and below).
  * - **L4** on-disk scan of `${DSH_HOME || ~/.dsh}/sessions` with multi-frame
  *   zstd decoding; used when `sessionQuery` is unavailable.
  *
  * Enumeration still comes from `sessionQuery.listSessions()` (or the directory
- * scan): the projection cache answers titles, not the corpus. Titles are
- * retained in L0 so a later call answers from memory.
+ * scan): the projection cache answers titles, not the corpus.
+ *
+ * Freshness: L1 answers from the host's stored projection rows, which track
+ * the session's durable checkpoints rather than its every keystroke, and L0
+ * holds an answer for up to {@link TITLE_TTL_MS}. A rename therefore becomes
+ * visible at the next checkpoint, not mid-turn — the deliberate trade for
+ * removing a per-session log read from every enumeration.
  * @module dsh-s2s/discovery
  */
 import { readdir, readFile } from 'node:fs/promises'
@@ -51,8 +56,6 @@ interface SessionRecordLike { readonly header: { readonly id: unknown; readonly 
 interface SessionQueryLike {
   listSessions(): Promise<SessionRecordLike[]>
   readTitle(sessionId: unknown): Promise<{ readonly title?: string } | undefined>
-  /** Batch title fold; absent on hosts older than 0.1.7. */
-  readTitleSnapshots?(sessionIds: readonly unknown[]): Promise<readonly ({ readonly title?: string } | undefined)[]>
 }
 
 /**
@@ -130,24 +133,47 @@ export class S2sDiscoveryService extends Service {
   }
 
   /**
+   * L1: read one title from the host's projection cache (0.1.7+).
+   *
+   * `cachedSnapshot` is the documented zero-I/O listing read — it views stored
+   * projection rows and never opens a log. It is version- and lifecycle-matched,
+   * so it returns `undefined` whenever no usable row exists (including after a
+   * session format change, the case that keeps L3 alive).
+   *
+   * @param meta - the listing header that witnesses this session's lifecycle.
+   * @returns `{ title }` when a row answered (a missing title is a real answer),
+   *   or `undefined` when this layer cannot answer at all.
+   */
+  private readTitleFromL1(meta: unknown): { title: string | undefined } | undefined {
+    const projection = this.projectionCache
+    if (projection === undefined || typeof projection.cachedSnapshot !== 'function') return undefined
+    try {
+      const snapshot = projection.cachedSnapshot(meta, ['title'])
+      if (snapshot === undefined) return undefined
+      const value = snapshot.values?.title
+      return { title: typeof value === 'string' && value.length > 0 ? value : undefined }
+    } catch {
+      return undefined // a broken cache is a miss, never a failure
+    }
+  }
+
+  /**
    * Resolve one session's title as cheaply as the host allows.
    *
-   * Order: L0 cache → L1 projection cache → L2 batch (only when `batch` is
-   * supplied by the caller, so a bulk enumeration pays one observation) →
-   * L3 single read → L4 on-disk scan. A successful read is retained in L0, but
-   * a title-less result only is when `sessionDir` is known — otherwise every
-   * later call would re-read a genuinely untitled session.
+   * Order: L0 cache → L1 projection cache → L3 single read → L4 on-disk scan.
+   * A result is retained in L0 when it came from a real read; a title-less
+   * result only is when `sessionDir` is known — otherwise every later call
+   * would re-read a genuinely untitled session.
    *
    * @param sessionId - exact session id.
    * @param meta - the listing header, required for L1's lifecycle match.
-   * @param batch - a pre-read batch value for this id (L2), when one was taken.
    * @param sessionDir - on-disk directory for the L4 fallback.
+   * @param workspaceDir - listing workspace directory, retained in L0.
    * @returns the title, or undefined when no layer produced one.
    */
   private async readTitleLayered(
     sessionId: string,
     meta?: unknown,
-    batch?: { readonly title?: string } | undefined,
     sessionDir?: string,
     workspaceDir?: string,
   ): Promise<string | undefined> {
@@ -158,23 +184,9 @@ export class S2sDiscoveryService extends Service {
     let read = false
 
     // L1: zero-I/O listing read.
-    const projection = this.projectionCache
-    if (!read && projection !== undefined && typeof projection.cachedSnapshot === 'function' && meta !== undefined) {
-      try {
-        const snapshot = projection.cachedSnapshot(meta, ['title'])
-        const value = snapshot?.values?.title
-        if (typeof value === 'string' && value.length > 0) {
-          title = value
-          read = true
-        } else if (snapshot !== undefined) {
-          read = true // a cached row exists and holds no title: a real answer
-        }
-      } catch { /* fall through to the read layers */ }
-    }
-
-    // L2: a batch fold the caller already took.
-    if (!read && batch !== undefined) {
-      title = batch.title
+    const fromL1 = this.readTitleFromL1(meta)
+    if (fromL1 !== undefined) {
+      title = fromL1.title
       read = true
     }
 
@@ -298,7 +310,7 @@ export class S2sDiscoveryService extends Service {
         if (record === undefined) return undefined
         // L1 answers from the host's projection cache; L0 may answer with no
         // enumeration at all on a repeat call (handled by resolve()).
-        const title = await this.readTitleLayered(sessionId, record.header, undefined, undefined, record.header.cwd)
+        const title = await this.readTitleLayered(sessionId, record.header, undefined, record.header.cwd)
         return toInfo(record, sessionId, title, this.stateOf(sessionId))
       } catch { /* fall through to the full scan */ }
     }
@@ -307,60 +319,32 @@ export class S2sDiscoveryService extends Service {
   }
 
   /**
-   * Enumerate from `sessionQuery`. Titles come from L1 per record; records the
-   * projection cache does not answer are folded in one L2 batch observation
-   * when the host exposes `readTitleSnapshots`, otherwise read one by one (L3).
+   * Enumerate from `sessionQuery`, cheapest source first per record:
+   * L0 cache → L1 projection cache → L3 per-session read.
+   *
+   * Titles are retained in L0 so a later call pays nothing at all, and on
+   * 0.1.7+ L1 answers the first call with zero log reads.
    */
   private async collectFromQuery(query: SessionQueryLike): Promise<S2sSessionInfo[]> {
     const records = await query.listSessions()
-    // L0 short-circuit: cache hits need no read at all.
-    const pending: SessionRecordLike[] = []
     const titles = new Map<string, string | undefined>()
+    const misses: SessionRecordLike[] = []
+
     for (const record of records) {
       const sessionId = String(record.header.id)
-      const cached = this.cache.get(sessionId, this.now())
-      if (cached !== undefined) titles.set(sessionId, cached.title)
-      else pending.push(record)
-    }
-
-    // L1 for everything still unresolved; only true misses go to L2.
-    const misses: SessionRecordLike[] = []
-    if (this.projectionCache !== undefined && typeof this.projectionCache.cachedSnapshot === 'function') {
-      for (const record of pending) {
-        const sessionId = String(record.header.id)
-        let answered = false
-        try {
-          const snapshot = this.projectionCache.cachedSnapshot(record.header, ['title'])
-          const value = snapshot?.values?.title
-          if (typeof value === 'string' && value.length > 0) {
-            titles.set(sessionId, value)
-            this.cache.set(sessionId, value, this.now(), record.header.cwd)
-            answered = true
-          } else if (snapshot !== undefined) {
-            // A cached row with no title is a real answer, not a miss.
-            titles.set(sessionId, undefined)
-            this.cache.set(sessionId, undefined, this.now(), record.header.cwd)
-            answered = true
-          }
-        } catch { /* treat as a miss and read */ }
-        if (!answered) misses.push(record)
+      const cached = this.cache.get(sessionId, this.now()) // E1/E4
+      if (cached !== undefined) {
+        titles.set(sessionId, cached.title)
+        continue
       }
-    } else {
-      misses.push(...pending)
-    }
-
-    // L2: one corpus observation for every remaining id, when supported.
-    if (misses.length > 0 && typeof query.readTitleSnapshots === 'function') {
-      const ids = misses.map(record => SessionId(String(record.header.id)))
-      try {
-        const results = await query.readTitleSnapshots(ids)
-        misses.forEach((record, index) => {
-          const sessionId = String(record.header.id)
-          const title = results[index]?.title
-          titles.set(sessionId, title)
-          this.cache.set(sessionId, title, this.now(), record.header.cwd)
-        })
-      } catch { /* fall through to per-session reads below */ }
+      const fromL1 = this.readTitleFromL1(record.header)
+      if (fromL1 !== undefined) {
+        // A title-less row is a real answer, not a miss.
+        titles.set(sessionId, fromL1.title)
+        this.cache.set(sessionId, fromL1.title, this.now(), record.header.cwd)
+        continue
+      }
+      misses.push(record)
     }
 
     return mapLimit(records, READ_CONCURRENCY, async (record): Promise<S2sSessionInfo> => {
@@ -368,8 +352,10 @@ export class S2sDiscoveryService extends Service {
       if (titles.has(sessionId)) {
         return toInfo(record, sessionId, titles.get(sessionId), this.stateOf(sessionId))
       }
-      // L3: per-session observation (the only path on pre-0.1.7 hosts).
-      const title = await this.readTitleLayered(sessionId)
+      // L3: a single-session observation. The only path on hosts without the
+      // projection cache (0.1.5 and below), and the fallback on 0.1.7+ when no
+      // cached row exists yet for this session.
+      const title = await this.readTitleLayered(sessionId, record.header, undefined, record.header.cwd)
       return toInfo(record, sessionId, title, this.stateOf(sessionId))
     })
   }
@@ -394,7 +380,7 @@ export class S2sDiscoveryService extends Service {
       const cached = this.cache.get(sessionId, this.now())
       let title = cached?.title
       if (cached === undefined) {
-        title = await this.readTitleLayered(sessionId, undefined, undefined, join(root, workspaceDir, entry))
+        title = await this.readTitleLayered(sessionId, undefined, join(root, workspaceDir, entry), workspaceDir)
         this.cache.set(sessionId, title, this.now(), workspaceDir)
       }
       return { sessionId, ...(title === undefined ? {} : { title }), workspaceDir, state: this.stateOf(sessionId) }
