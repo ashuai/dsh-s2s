@@ -48,7 +48,7 @@
     "vitest": "^4.0.18"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsdown",
+    "build": "tsc -p tsconfig.json && tsdown && node scripts/verify-bundle.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "prepare": "pnpm run build"
