@@ -16,6 +16,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { S2sError } from './error.ts'
+import { S2S_MESSAGE_SOURCE } from './source.ts'
 import type { S2sLifecycleService } from './lifecycle.ts'
 
 /** One scheduled job. */
@@ -199,7 +200,7 @@ export class S2sScheduleService extends Service {
     const text = '[s2s schedule] job=' + job.id + ' at=' + new Date(nowMs).toISOString() + '\n' + job.text
     const message = createUserMessage({
       content: [{ type: 'text', text }],
-      source: { kind: 'plugin', plugin: 'dsh-s2s' },
+      source: S2S_MESSAGE_SOURCE,
     })
     agent.followup(message)
   }

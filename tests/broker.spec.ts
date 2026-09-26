@@ -49,5 +49,20 @@ describe('s2s broker', () => {
   it('accepts a safe session id', () => {
     expect(() => S2sBroker.assertSafeSessionId('sess-1')).not.toThrow()
   })
+
+  // Session format v4 refuses `{ kind: 'plugin', … }` at write admission, which
+  // aborts the whole turn. Losing this would make every s2s delivery fail.
+  it('tags deliveries with a producer-owned source kind, never the retired wrapper', async () => {
+    const ctx = new Context()
+    const agent = fakeAgent('idle')
+    ctx.provide('agents', { get: () => agent } as never)
+    await ctx.plugin(S2sBroker)
+    const broker = ctx.get('s2sBroker') as S2sBroker
+    broker.deliver('s', { from: 'alice', text: 'hi', msgId: 'm1' })
+    const source = (agent as any).followup.mock.calls[0][0].source as { kind: string; plugin?: string }
+    expect(source.kind).not.toBe('plugin')
+    expect(source.plugin).toBeUndefined()
+    expect(source.kind).toBe('dsh-s2s')
+  })
 })
 

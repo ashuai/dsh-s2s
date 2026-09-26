@@ -50,6 +50,11 @@ describe('s2s lifecycle', () => {
     expect(followups).toHaveLength(1)
     expect(String((followups[0] as { content: { text: string }[] }).content[0]!.text)).toContain('[s2s-lifecycle message]')
     expect(String((followups[0] as { content: { text: string }[] }).content[0]!.text)).toContain('hello dormant')
+    // Producer-owned kind: session format v4 refuses the retired `plugin` wrapper.
+    const source = (followups[0] as { source: { kind: string; plugin?: string } }).source
+    expect(source.kind).not.toBe('plugin')
+    expect(source.plugin).toBeUndefined()
+    expect(source.kind).toBe('dsh-s2s')
     expect(await lifecycle.queuedCount('sess-1')).toBe(0)
   })
 

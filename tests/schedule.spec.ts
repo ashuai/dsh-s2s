@@ -103,9 +103,9 @@ describe('s2s schedule service', () => {
     const now = job.nextAt + 1
     expect(await svc.tick(now)).toBe(1)
     expect(followups).toHaveLength(1)
-    const msg = followups[0] as { content: { text: string }[]; source: { kind: string; plugin: string } }
-    expect(msg.source.kind).toBe('plugin')
-    expect(msg.source.plugin).toBe('dsh-s2s')
+    const msg = followups[0] as { content: { text: string }[]; source: { kind: string } }
+    // Producer-owned kind: session format v4 refuses the retired `plugin` wrapper.
+    expect(msg.source.kind).toBe('dsh-s2s')
     expect(msg.content[0]!.text).toContain('run it')
     expect(msg.content[0]!.text).toContain('[s2s schedule]')
   })

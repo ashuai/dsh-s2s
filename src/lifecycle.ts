@@ -15,6 +15,7 @@ import { installModelSelection, type Agent, type ModelSelection } from '@deepsee
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { S2sError } from './error.ts'
+import { S2S_MESSAGE_SOURCE } from './source.ts'
 import { S2sMailbox, type MailboxEntry } from './mailbox.ts'
 
 /** Lifecycle knobs. */
@@ -150,7 +151,7 @@ export class S2sLifecycleService extends Service {
 ${entry.text}`
       const userMessage = createUserMessage({
         content: [{ type: 'text', text }],
-        source: { kind: 'plugin', plugin: 'dsh-s2s' },
+        source: S2S_MESSAGE_SOURCE,
       })
       if (agent.status === 'idle') {
         agent.followup(userMessage)
