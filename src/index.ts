@@ -47,8 +47,14 @@ export interface Config {
 /**
  * Mount the s2s core: the in-process broker + session discovery + tools, and
  * (when configured) the lifecycle wake path and the anti-loop budget.
+ *
+ * `config` defaults to `{}`: a bare mount (broker + discovery + tools only) is
+ * a supported shape, and a profile row that declares no `config` block at all
+ * may hand `undefined`. Reading `config.lifecycle` then threw
+ * `Cannot read properties of undefined`, so the documented bare mount was the
+ * one shape that could not actually mount.
  */
-export function apply(ctx: Context, config: Config): void {
+export function apply(ctx: Context, config: Config = {}): void {
   ctx.plugin(S2sBroker)
   ctx.plugin(S2sDiscoveryService)
   if (config.lifecycle !== undefined) {
