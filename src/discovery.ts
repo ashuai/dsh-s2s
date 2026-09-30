@@ -2,30 +2,27 @@
  * Session discovery for the s2s seam.
  *
  * Title resolution is layered, cheapest first, and every layer is
- * capability-probed so the plugin keeps working on hosts back to
- * `0.1.0-rc.6`:
+ * capability-probed:
  *
- * - **L0** {@link TitleCache} — durable local cache (memory + one small JSON
- *   file), consulted synchronously. The only cross-version accelerant; works
- *   on every host.
- * - **L1** `ctx.sessionProjectionCache.cachedSnapshot(header, ['title'])` —
- *   the host's zero-I/O listing read (0.1.7+). A rename is visible at the next
- *   durable checkpoint.
+ * - **L1** `ctx.sessionProjectionCache.cachedSnapshot(header, ['title'])`, then
+ *   `cachedPredecessorTitle(header)` — the host's two zero-I/O listing reads
+ *   (0.1.7+). A rename is visible at the next durable checkpoint.
  * - **L3** `sessionQuery.readTitle(id)` — a per-session observation that loads
- *   and folds that session's whole log. This is what made an enumeration cost
- *   ~94 ms per session; kept as the fallback for hosts without the projection
- *   cache (0.1.5 and below).
+ *   and folds that session's whole log (tens of ms). Kept for sessions no
+ *   cached row covers.
  * - **L4** on-disk scan of `${DSH_HOME || ~/.dsh}/sessions` with multi-frame
  *   zstd decoding; used when `sessionQuery` is unavailable.
  *
  * Enumeration still comes from `sessionQuery.listSessions()` (or the directory
  * scan): the projection cache answers titles, not the corpus.
  *
- * Freshness: L1 answers from the host's stored projection rows, which track
- * the session's durable checkpoints rather than its every keystroke, and L0
- * holds an answer for up to {@link TITLE_TTL_MS}. A rename therefore becomes
- * visible at the next checkpoint, not mid-turn — the deliberate trade for
- * removing a per-session log read from every enumeration.
+ * Freshness: this service keeps **no cache of its own**. The host's projection
+ * rows are the single source, and they track the session's durable checkpoints,
+ * so a rename becomes visible at the next checkpoint rather than mid-turn. A
+ * local cache used to sit in front of L1; being unable to observe upstream
+ * changes, it could serve a renamed session's old name indefinitely — the host
+ * had the new name while we kept answering with the old one. Removing it costs
+ * at most the rare L3 reads L1 cannot answer and buys correctness outright.
  * @module dsh-s2s/discovery
  */
 import { readdir, readFile } from 'node:fs/promises'
@@ -35,7 +32,6 @@ import { zstdDecompressSync } from 'node:zlib'
 import { Service, type Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { TitleCache } from './title-cache.ts'
 
 export interface S2sSessionInfo {
   readonly sessionId: string
@@ -90,10 +86,6 @@ interface ProjectionView {
 export interface S2sDiscoveryConfig {
   /** Override the `${DSH_HOME}/sessions` scan root (tests, exotic layouts). */
   readonly sessionsRoot?: string
-  /** Override the title-cache file path (tests). */
-  readonly cachePath?: string
-  /** Injectable clock for cache-age tests. */
-  readonly now?: () => number
 }
 
 /** Max concurrent title reads / log scans; bounds open FDs on a large corpus. */
@@ -119,8 +111,6 @@ export class S2sDiscoveryService extends Service {
   private queryService?: SessionQueryLike
   private projectionCache?: SessionProjectionCacheLike
   private readonly sessionsRoot: string | undefined
-  private readonly cache: TitleCache
-  private readonly now: () => number
   /** In-flight full scan shared by concurrent callers; cleared as soon as it settles. */
   private inflight: Promise<S2sSessionInfo[]> | undefined
   static inject = ['agents']
@@ -128,12 +118,6 @@ export class S2sDiscoveryService extends Service {
   constructor(ctx: Context, config?: S2sDiscoveryConfig) {
     super(ctx, 's2sDiscovery')
     this.sessionsRoot = config?.sessionsRoot
-    this.cache = new TitleCache(config?.cachePath, (error) => {
-      // A denied cache write must be reported once: silently swallowing it turns
-      // the whole L0 layer into a no-op and every later call re-reads the corpus.
-      ctx.logger?.warn(`s2s discovery: title cache is not writable, falling back to per-call reads: ${String(error)}`)
-    })
-    this.now = config?.now ?? Date.now
     // Optional dependencies: bind only when the host provides them.
     ctx.inject(['sessionQuery'], (sctx) => {
       this.queryService = (sctx as unknown as { sessionQuery: SessionQueryLike }).sessionQuery
@@ -143,14 +127,11 @@ export class S2sDiscoveryService extends Service {
     })
   }
 
-  /** The durable title cache; exposed for tooling and tests. */
-  titleCache(): TitleCache {
-    return this.cache
-  }
-
-  /** E3: drop cached titles so the next resolve re-reads them. */
-  forgetCachedTitle(sessionId: string): void {
-    this.cache.forget(sessionId)
+  /** Re-read a session's title from the host on the next call. Retained as a
+   * no-op-shaped API for callers that used to drop a local entry. */
+  forgetCachedTitle(_sessionId: string): void {
+    // No local cache exists any more: every call already reads the host's
+    // projection rows, so there is nothing to invalidate.
   }
 
   /**
@@ -186,26 +167,20 @@ export class S2sDiscoveryService extends Service {
   /**
    * Resolve one session's title as cheaply as the host allows.
    *
-   * Order: L0 cache → L1 projection cache → L3 single read → L4 on-disk scan.
-   * A result is retained in L0 when it came from a real read; a title-less
-   * result only is when `sessionDir` is known — otherwise every later call
-   * would re-read a genuinely untitled session.
+   * Order: L1 projection cache → L3 single read → L4 on-disk scan. Nothing is
+   * remembered between calls, so a rename is visible as soon as the host's rows
+   * carry it.
    *
    * @param sessionId - exact session id.
    * @param meta - the listing header, required for L1's lifecycle match.
    * @param sessionDir - on-disk directory for the L4 fallback.
-   * @param workspaceDir - listing workspace directory, retained in L0.
    * @returns the title, or undefined when no layer produced one.
    */
   private async readTitleLayered(
     sessionId: string,
     meta?: unknown,
     sessionDir?: string,
-    workspaceDir?: string,
   ): Promise<string | undefined> {
-    const cached = this.cache.get(sessionId, this.now()) // E1/E4
-    if (cached !== undefined) return cached.title
-
     let title: string | undefined
     let read = false
 
@@ -231,10 +206,7 @@ export class S2sDiscoveryService extends Service {
       read = true
     }
 
-    if (read && (title !== undefined || sessionDir !== undefined)) {
-      this.cache.set(sessionId, title, this.now(), workspaceDir)
-    }
-    return title
+    return read ? title : undefined
   }
 
   liveAgent(sessionId: string): Agent | undefined {
@@ -252,53 +224,19 @@ export class S2sDiscoveryService extends Service {
 
   async resolve(name: string | undefined, sessionId: string | undefined): Promise<S2sResolveResult> {
     if (sessionId !== undefined && sessionId.length > 0) {
-      // L0 fast path: a cached hit that knows its workspace answers with no
-      // enumeration and no read at all.
-      const cached = this.cache.get(sessionId, this.now())
-      if (cached !== undefined && cached.workspaceDir !== undefined) {
-        return toOk({
-          sessionId,
-          ...(cached.title === undefined ? {} : { title: cached.title }),
-          state: this.stateOf(sessionId),
-          workspaceDir: cached.workspaceDir,
-        })
-      }
-      // Fast path: an exact id needs only that session's title, not the corpus.
+      // An exact id needs only that session's title, not the corpus.
       const exact = await this.collectById(sessionId)
       if (exact !== undefined) return toOk(exact)
     }
 
-    // L0 fast path for name addressing: exactly one cached session owns this
-    // name, so answer without enumerating. Two or more cached owners means the
-    // name may be ambiguous — fall through to the corpus for a real verdict.
-    const needle = name?.trim().toLowerCase()
-    if (needle !== undefined && needle.length > 0) {
-      const owners = this.cache.findByName(needle)
-      if (owners.length === 1) {
-        const cached = this.cache.get(owners[0]!, this.now())
-        if (cached?.workspaceDir !== undefined) {
-          return toOk({
-            sessionId: owners[0]!,
-            ...(cached.title === undefined ? {} : { title: cached.title }),
-            state: this.stateOf(owners[0]!),
-            workspaceDir: cached.workspaceDir,
-          })
-        }
-      } else if (owners.length > 1) {
-        // E2: record the collision so it is not answered from cache again.
-        for (const owner of owners) this.cache.markAmbiguous(owner, this.now())
-      }
-    }
-
+    // Every name resolution enumerates and reads the host's rows. Answering from
+    // a local copy instead is what let a renamed session keep its old name.
     const infos = await this.collect()
+    const needle = name?.trim().toLowerCase()
     if (needle === undefined || needle.length === 0) return { kind: 'not-found', name: name ?? '', candidates: infos.map(toCandidate) }
     const matches = infos.filter(info => info.title?.trim().toLowerCase() === needle)
     if (matches.length === 0) return { kind: 'not-found', name: name ?? '', candidates: infos.map(toCandidate) }
-    if (matches.length > 1) {
-      // E2: remember the ambiguity so the cache never resolves this name alone.
-      for (const match of matches) this.cache.markAmbiguous(match.sessionId, this.now())
-      return { kind: 'ambiguous', name: name ?? '', candidates: matches.map(toCandidate) }
-    }
+    if (matches.length > 1) return { kind: 'ambiguous', name: name ?? '', candidates: matches.map(toCandidate) }
     return toOk(matches[0]!)
   }
 
@@ -334,9 +272,8 @@ export class S2sDiscoveryService extends Service {
         const records = await query.listSessions()
         const record = records.find(entry => String(entry.header.id) === sessionId)
         if (record === undefined) return undefined
-        // L1 answers from the host's projection cache; L0 may answer with no
-        // enumeration at all on a repeat call (handled by resolve()).
-        const title = await this.readTitleLayered(sessionId, record.header, undefined, record.header.cwd)
+        // L1 answers from the host's projection cache with zero log reads.
+        const title = await this.readTitleLayered(sessionId, record.header)
         return toInfo(record, sessionId, title, this.stateOf(sessionId))
       } catch { /* fall through to the full scan */ }
     }
@@ -346,10 +283,10 @@ export class S2sDiscoveryService extends Service {
 
   /**
    * Enumerate from `sessionQuery`, cheapest source first per record:
-   * L0 cache → L1 projection cache → L3 per-session read.
+   * L1 projection cache → L3 per-session read.
    *
-   * Titles are retained in L0 so a later call pays nothing at all, and on
-   * 0.1.7+ L1 answers the first call with zero log reads.
+   * L1 answers with zero log reads; L3 is reached only for sessions no cached
+   * row covers.
    */
   private async collectFromQuery(query: SessionQueryLike): Promise<S2sSessionInfo[]> {
     const records = await query.listSessions()
@@ -358,16 +295,10 @@ export class S2sDiscoveryService extends Service {
 
     for (const record of records) {
       const sessionId = String(record.header.id)
-      const cached = this.cache.get(sessionId, this.now()) // E1/E4
-      if (cached !== undefined) {
-        titles.set(sessionId, cached.title)
-        continue
-      }
       const fromL1 = this.readTitleFromL1(record.header)
       if (fromL1 !== undefined) {
         // A title-less row is a real answer, not a miss.
         titles.set(sessionId, fromL1.title)
-        this.cache.set(sessionId, fromL1.title, this.now(), record.header.cwd)
         continue
       }
       misses.push(record)
@@ -381,7 +312,7 @@ export class S2sDiscoveryService extends Service {
       // L3: a single-session observation. The only path on hosts without the
       // projection cache (0.1.5 and below), and the fallback on 0.1.7+ when no
       // cached row exists yet for this session.
-      const title = await this.readTitleLayered(sessionId, record.header, undefined, record.header.cwd)
+      const title = await this.readTitleLayered(sessionId, record.header)
       return toInfo(record, sessionId, title, this.stateOf(sessionId))
     })
   }
@@ -402,13 +333,7 @@ export class S2sDiscoveryService extends Service {
     }
     return mapLimit(targets, READ_CONCURRENCY, async ({ workspaceDir, entry }): Promise<S2sSessionInfo> => {
       const sessionId = entry.slice('session-'.length)
-      // L0 first: on hosts with no sessionQuery this is the whole acceleration.
-      const cached = this.cache.get(sessionId, this.now())
-      let title = cached?.title
-      if (cached === undefined) {
-        title = await this.readTitleLayered(sessionId, undefined, join(root, workspaceDir, entry), workspaceDir)
-        this.cache.set(sessionId, title, this.now(), workspaceDir)
-      }
+      const title = await this.readTitleLayered(sessionId, undefined, join(root, workspaceDir, entry))
       return { sessionId, ...(title === undefined ? {} : { title }), workspaceDir, state: this.stateOf(sessionId) }
     })
   }

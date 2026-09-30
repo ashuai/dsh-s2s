@@ -23,7 +23,7 @@ const bundle = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
 const REQUIRED = [
   { marker: 'cachedPredecessorTitle', why: 'L1 predecessor-title face (session discovery titles)' },
   { marker: 'shortId', why: 'non-prefixed short session id in tool output' },
-  { marker: 'onPersistError', why: 'title-cache write failure reporting' },
+  { marker: 'readTitleFromL1', why: 'the host projection cache is the title source' },
   { marker: 'dsh-s2s', why: 'producer-owned message source kind' },
 ]
 

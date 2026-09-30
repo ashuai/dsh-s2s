@@ -1,37 +1,15 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { S2sDiscoveryService } from '../src/discovery.ts'
-import { TitleCache, TITLE_TTL_MS } from '../src/title-cache.ts'
-
-const dirs: string[] = []
-afterEach(async () => {
-  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true })
-})
-
-async function tmpCache(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 's2s-cache-'))
-  dirs.push(dir)
-  return join(dir, 'title-cache.json')
-}
 
 function rec(id: string, cwd: string, live = false) { return { header: { id, cwd }, live } }
 
 /** A sessionQuery stub that counts every read, so tests can assert "no read". */
-function countingQuery(records: unknown[], titles: Record<string, string>, opts: { batch?: boolean } = {}) {
-  const counts = { list: 0, readTitle: 0, batch: 0, batchSizes: [] as number[] }
-  const query: Record<string, unknown> = {
+function countingQuery(records: unknown[], titles: Record<string, string>) {
+  const counts = { list: 0, readTitle: 0 }
+  const query = {
     listSessions: async () => { counts.list += 1; return records },
     readTitle: async (id: unknown) => { counts.readTitle += 1; return titles[String(id)] !== undefined ? { title: titles[String(id)] } : undefined },
-  }
-  if (opts.batch !== false) {
-    query.readTitleSnapshots = async (ids: readonly unknown[]) => {
-      counts.batch += 1
-      counts.batchSizes.push(ids.length)
-      return ids.map(id => titles[String(id)] !== undefined ? { title: titles[String(id)] } : undefined)
-    }
   }
   return { query, counts }
 }
@@ -39,29 +17,26 @@ function countingQuery(records: unknown[], titles: Record<string, string>, opts:
 interface HarnessOptions {
   /** Ids whose cached row exists but holds no usable title. */
   projection?: {
+    /** Mutable on purpose: a test may rewrite it to simulate a rename. */
     hits: Record<string, string>
     titleLess?: readonly string[]
     misses?: readonly string[]
-    calls?: string[]
     present?: boolean
     /** Ids whose title is only reachable through cachedPredecessorTitle. */
     predecessorOnly?: readonly string[]
   }
-  batch?: boolean
-  now?: () => number
 }
 
 async function harness(records: unknown[], titles: Record<string, string>, opts: HarnessOptions = {}) {
   const ctx = new Context()
   ctx.provide('agents', { get: () => undefined })
-  const { query, counts } = countingQuery(records, titles, { batch: opts.batch ?? true })
+  const { query, counts } = countingQuery(records, titles)
   ctx.provide('sessionQuery', query)
   if (opts.projection !== undefined && opts.projection.present !== false) {
     const hits = opts.projection.hits
     ctx.provide('sessionProjectionCache', {
       cachedSnapshot: (meta: unknown, keys?: readonly string[]) => {
         const id = String((meta as { id: unknown }).id)
-        opts.projection!.calls?.push(id)
         if (keys !== undefined && !keys.includes('title')) return undefined
         // Explicit miss, otherwise a row exists for every hit/title-less id —
         // a title-less row is an answer, not a miss.
@@ -82,248 +57,109 @@ async function harness(records: unknown[], titles: Record<string, string>, opts:
       },
     })
   }
-  const cachePath = await tmpCache()
-  await ctx.plugin(S2sDiscoveryService, { cachePath, ...(opts.now === undefined ? {} : { now: opts.now }) })
-  return { d: ctx.get('s2sDiscovery') as S2sDiscoveryService, ctx, counts, cachePath }
+  await ctx.plugin(S2sDiscoveryService)
+  return { d: ctx.get('s2sDiscovery') as S2sDiscoveryService, ctx, counts }
 }
-
-describe('s2s discovery title cache', () => {
-  it('answers the second call with no log read at all', async () => {
-    const { d, counts } = await harness([rec('a', '/w'), rec('b', '/w')], { a: '甲', b: '乙' })
-    await d.list()
-    const firstReads = counts.readTitle + counts.batch
-    expect(firstReads).toBeGreaterThan(0)
-    counts.readTitle = 0
-    counts.batch = 0
-    counts.list = 0
-    const second = await d.list()
-    expect(second.map(s => s.title)).toEqual(['甲', '乙'])
-    expect(counts.readTitle).toBe(0)
-    expect(counts.batch).toBe(0)
-  })
-
-  it('E1: an uncached name triggers one read and is retained', async () => {
-    const { d, counts } = await harness([rec('a', '/w')], { a: '开发' })
-    expect((await d.resolve('开发', undefined)).kind).toBe('ok')
-    const afterFirst = counts.batch + counts.readTitle
-    expect(afterFirst).toBeGreaterThan(0)
-    // Second resolve is served from the cache.
-    const again = await d.resolve('开发', undefined)
-    expect(again.kind).toBe('ok')
-    if (again.kind === 'ok') expect(again.sessionId).toBe('a')
-    expect(counts.batch + counts.readTitle).toBe(afterFirst)
-  })
-
-  it('E2: a cached name collision falls through and is marked ambiguous', async () => {
-    const { d } = await harness([rec('a', '/w'), rec('b', '/w')], { a: '同名', b: '同名' })
-    const first = await d.resolve('同名', undefined)
-    expect(first.kind).toBe('ambiguous')
-    // The collision is recorded, so the cache alone no longer answers it.
-    const owners = d.titleCache().findByName('同名')
-    expect(owners).toEqual([])
-    const second = await d.resolve('同名', undefined)
-    expect(second.kind).toBe('ambiguous')
-  })
-
-  it('E3: forgetting an entry forces a re-read', async () => {
-    const { d, counts } = await harness([rec('a', '/w')], { a: '旧名' })
-    await d.list()
-    counts.batch = 0
-    counts.readTitle = 0
-    d.forgetCachedTitle('a')
-    await d.list()
-    expect(counts.batch + counts.readTitle).toBeGreaterThan(0)
-  })
-
-  it('E4: an entry older than the TTL is re-read; a fresh one is not', async () => {
-    let clock = 1_000_000
-    const { d, counts } = await harness([rec('a', '/w')], { a: '标题' }, { now: () => clock })
-    await d.list()
-    counts.batch = 0
-    counts.readTitle = 0
-
-    clock += TITLE_TTL_MS - 1000 // still fresh
-    await d.list()
-    expect(counts.batch + counts.readTitle).toBe(0)
-
-    // The hit above refreshed `lastAccess`; age is measured from that access,
-    // so pass the TTL again from here to reach E4.
-    clock += TITLE_TTL_MS + 1000
-    await d.list()
-    expect(counts.batch + counts.readTitle).toBeGreaterThan(0)
-  })
-
-  it('does NOT re-read when only the log bytes change (lazy invalidation)', async () => {
-    const cachePath = await tmpCache()
-    const ctx = new Context()
-    ctx.provide('agents', { get: () => undefined })
-    const { query, counts } = countingQuery([rec('a', '/w')], { a: '标题' })
-    ctx.provide('sessionQuery', query)
-    await ctx.plugin(S2sDiscoveryService, { cachePath })
-    const d = ctx.get('s2sDiscovery') as S2sDiscoveryService
-    await d.list()
-    counts.batch = 0
-    counts.readTitle = 0
-    // Simulate the underlying log having changed: nothing in the cache tells us
-    // that, and by design that must NOT trigger a re-read.
-    const recordsBefore = counts.list
-    await d.list()
-    expect(counts.batch + counts.readTitle).toBe(0)
-    expect(counts.list).toBe(recordsBefore + 1) // enumeration still happens
-  })
-
-  it('persists across a service restart answered from the file alone', async () => {
-    const cachePath = await tmpCache()
-    const first = new Context()
-    first.provide('agents', { get: () => undefined })
-    const q1 = countingQuery([rec('a', '/w')], { a: '持久标题' })
-    first.provide('sessionQuery', q1.query)
-    const svc1 = await first.plugin(S2sDiscoveryService, { cachePath }).then(() => first.get('s2sDiscovery') as S2sDiscoveryService)
-    await svc1.list()
-    await svc1.titleCache().flush()
-
-    const second = new Context()
-    second.provide('agents', { get: () => undefined })
-    const q2 = countingQuery([rec('a', '/w')], { a: '持久标题' })
-    second.provide('sessionQuery', q2.query)
-    await second.plugin(S2sDiscoveryService, { cachePath })
-    const svc2 = second.get('s2sDiscovery') as S2sDiscoveryService
-    const list = await svc2.list()
-    expect(list[0]!.title).toBe('持久标题')
-    expect(q2.counts.batch + q2.counts.readTitle).toBe(0)
-  })
-})
 
 describe('s2s discovery capability layers', () => {
   it('L1: the projection cache answers without any sessionQuery title read', async () => {
     const { d, counts } = await harness([rec('a', '/w'), rec('b', '/w')], {}, {
-      projection: { hits: { a: '缓存甲', b: '缓存乙' } },
+      projection: { hits: { a: '开发', b: '产品' } },
     })
     const list = await d.list()
-    expect(list.map(s => s.title)).toEqual(['缓存甲', '缓存乙'])
+    expect(list.map(s => s.title)).toEqual(['开发', '产品'])
     expect(counts.readTitle).toBe(0)
-    expect(counts.batch).toBe(0)
   })
 
   it('L1 miss falls to one per-session read for each miss only', async () => {
-    // There is deliberately no batch layer: the host's batch title fold
-    // (`readTitleSnapshots`) was measured at the same cost as N single reads
-    // (it loads every log either way), so only L1's zero-I/O rows are used.
-    const { d, counts } = await harness([rec('a', '/w'), rec('b', '/w'), rec('c', '/w')], { b: 'by-read', c: 'by-read-2' }, {
-      projection: { hits: { a: 'cached' }, misses: ['b', 'c'] },
+    const { d, counts } = await harness([rec('a', '/w'), rec('b', '/w')], { b: '只有读取能给' }, {
+      projection: { hits: { a: '甲' }, misses: ['b'] },
     })
     const list = await d.list()
-    expect(list.map(s => s.title)).toEqual(['cached', 'by-read', 'by-read-2'])
-    expect(counts.readTitle).toBe(2) // only the two L1 misses
-    expect(counts.batch).toBe(0) // no batch layer is consulted
+    expect(list.map(s => s.title)).toEqual(['甲', '只有读取能给'])
+    expect(counts.readTitle).toBe(1)
   })
 
   it('L1 absence of a title row is an answer, not a miss', async () => {
-    const { d, counts } = await harness([rec('a', '/w')], {}, {
-      projection: { hits: {}, titleLess: ['a'] }, // row exists but holds no title
+    const { d, counts } = await harness([rec('a', '/w')], { a: '读取不该被调用' }, {
+      projection: { hits: {}, titleLess: ['a'] },
     })
     const list = await d.list()
     expect(list[0]!.title).toBeUndefined()
-    expect(counts.batch).toBe(0)
     expect(counts.readTitle).toBe(0)
   })
 
-  it('pre-0.1.7 host: no projection cache and no batch API still resolves via L3', async () => {
-    const { d, counts } = await harness([rec('a', '/w/a'), rec('b', '/w/b')], { a: '老甲', b: '老乙' }, {
-      batch: false,
-      projection: { present: false, hits: {} },
+  it('host without a projection cache still resolves via L3', async () => {
+    const { d, counts } = await harness([rec('a', '/w')], { a: '回退标题' }, {
+      projection: { hits: {}, present: false },
     })
     const list = await d.list()
-    expect(list.map(s => s.title)).toEqual(['老甲', '老乙'])
-    expect(counts.readTitle).toBe(2)
-    expect(counts.batch).toBe(0)
-    // And the cache makes the next call free on that old host too.
-    counts.readTitle = 0
-    await d.list()
-    expect(counts.readTitle).toBe(0)
+    expect(list[0]!.title).toBe('回退标题')
+    expect(counts.readTitle).toBe(1)
   })
 
   it('L1 that throws is treated as a miss and never breaks enumeration', async () => {
     const ctx = new Context()
     ctx.provide('agents', { get: () => undefined })
-    const { query } = countingQuery([rec('a', '/w')], { a: '仍然可用' })
-    ctx.provide('sessionQuery', query)
-    ctx.provide('sessionProjectionCache', { cachedSnapshot: () => { throw new Error('boom') } })
-    await ctx.plugin(S2sDiscoveryService, { cachePath: await tmpCache() })
+    ctx.provide('sessionQuery', { listSessions: async () => [rec('a', '/w')], readTitle: async () => undefined })
+    ctx.provide('sessionProjectionCache', {
+      cachedSnapshot: () => { throw new Error('boom') },
+      cachedPredecessorTitle: () => { throw new Error('boom') },
+    })
+    await ctx.plugin(S2sDiscoveryService)
     const d = ctx.get('s2sDiscovery') as S2sDiscoveryService
-    const list = await d.list()
-    expect(list[0]!.title).toBe('仍然可用')
-  })
-
-  it('exact-id resolve is cache-served with no enumeration on a repeat', async () => {
-    const { d, counts } = await harness([rec('a', '/w')], { a: '按号' })
-    const first = await d.resolve(undefined, 'a')
-    expect(first.kind).toBe('ok')
-    const enumerations = counts.list
-    const second = await d.resolve(undefined, 'a')
-    expect(second.kind).toBe('ok')
-    if (second.kind === 'ok') expect(second.workspaceDir).toBe('/w')
-    // A cached id with a known workspace answers without listing the corpus.
-    expect(counts.list).toBe(enumerations)
+    await expect(d.list()).resolves.toHaveLength(1)
   })
 })
 
-describe('title cache unit', () => {
-  it('tolerates a malformed cache file', async () => {
-    const cachePath = await tmpCache()
-    await writeFile(cachePath, 'not json at all', 'utf8')
-    const cache = new TitleCache(cachePath)
-    expect(cache.get('a', 1)).toBeUndefined()
-    cache.set('a', 'x', 1)
-    expect(cache.get('a', 2)?.title).toBe('x')
+// The bug this file exists to pin down: a local cache sat in front of the host's
+// projection rows. It could not observe upstream changes, so once it held a
+// session's old name it answered with that name indefinitely — the host had
+// "新名" while s2s kept saying "旧名". Nothing may be remembered between calls.
+describe('s2s discovery freshness', () => {
+  it('reports a rename as soon as the host rows carry it', async () => {
+    const hits: Record<string, string> = { a: '旧名' }
+    const { d } = await harness([rec('a', '/w')], {}, { projection: { hits } })
+
+    expect((await d.list())[0]!.title).toBe('旧名')
+
+    hits.a = '新名' // the host checkpoints the rename
+    expect((await d.list())[0]!.title).toBe('新名')
   })
 
-  it('tolerates a cache file with a foreign version', async () => {
-    const cachePath = await tmpCache()
-    await writeFile(cachePath, JSON.stringify({ version: 99, sessions: { a: { builtAt: 1, lastAccess: 1, title: 'x' } } }), 'utf8')
-    const cache = new TitleCache(cachePath)
-    expect(cache.get('a')).toBeUndefined()
+  it('stops resolving the old name once the host carries the new one', async () => {
+    const hits: Record<string, string> = { a: '旧名' }
+    const { d } = await harness([rec('a', '/w')], {}, { projection: { hits } })
+
+    expect((await d.resolve('旧名', undefined)).kind).toBe('ok')
+
+    hits.a = '新名'
+    expect((await d.resolve('旧名', undefined)).kind).toBe('not-found')
+    expect((await d.resolve('新名', undefined)).kind).toBe('ok')
   })
 
-  it('writes what it read, atomically', async () => {
-    const cachePath = await tmpCache()
-    const cache = new TitleCache(cachePath)
-    cache.set('a', '写回', 5)
-    await cache.flush()
-    const raw = JSON.parse(await readFile(cachePath, 'utf8')) as { version: number; sessions: Record<string, { title?: string }> }
-    expect(raw.version).toBe(1)
-    expect(raw.sessions.a?.title).toBe('写回')
-  })
-})
+  it('re-reads the host on every name resolution instead of answering from memory', async () => {
+    const hits: Record<string, string> = { a: '名字' }
+    const { d, counts } = await harness([rec('a', '/w')], {}, { projection: { hits } })
 
-describe('title cache persistence reporting', () => {
-  it('reports a denied write once and stops retrying', async () => {
-    const { TitleCache } = await import('../src/title-cache.ts')
-    const errors: unknown[] = []
-    // A path the process cannot write to (a directory, not a file).
-    const dir = await mkdtemp(join(tmpdir(), 's2s-cache-denied-'))
-    dirs.push(dir)
-    const cache = new TitleCache(dir, (e) => errors.push(e))
-    cache.set('a', 'x')
-    await cache.flush()
-    await cache.flush() // second attempt must be skipped
-    expect(errors).toHaveLength(1)
-    expect(cache.persistenceUnavailable).toBe(true)
-    // reads still work from memory even when persistence is denied
-    expect(cache.get('a')?.title).toBe('x')
+    await d.resolve('名字', undefined)
+    await d.resolve('名字', undefined)
+    expect(counts.list).toBe(2)
   })
 
-  it('falls back to ~/.dsh when DSH_HOME is absent (never memory-only)', async () => {
-    const { TitleCache } = await import('../src/title-cache.ts')
-    const saved = process.env.DSH_HOME
-    delete process.env.DSH_HOME
-    try {
-      const cache = new TitleCache()
-      // Path resolution must be a real file path, not undefined.
-      expect(() => cache.set('a', 'x')).not.toThrow()
-    } finally {
-      if (saved !== undefined) process.env.DSH_HOME = saved
-    }
+  it('a first title appearing later is picked up', async () => {
+    const hits: Record<string, string> = {}
+    const { d } = await harness([rec('a', '/w')], {}, { projection: { hits, titleLess: [] } })
+
+    expect((await d.list())[0]!.title).toBeUndefined()
+    hits.a = '第一次命名'
+    expect((await d.list())[0]!.title).toBe('第一次命名')
+  })
+
+  it('forgetCachedTitle stays callable and is a no-op', async () => {
+    const { d } = await harness([rec('a', '/w')], {}, { projection: { hits: { a: '名字' } } })
+    expect(() => d.forgetCachedTitle('a')).not.toThrow()
+    expect((await d.list())[0]!.title).toBe('名字')
   })
 })
 
