@@ -132,7 +132,6 @@ export class S2sScheduleService extends Service {
     await this.ready
     const job = this.jobs.get(id)
     if (job === undefined) return false
-    const target = job.targetSessionId
     this.jobs.delete(id)
     await rm(this.fileFor(id), { force: true }).catch(() => undefined)
     return true

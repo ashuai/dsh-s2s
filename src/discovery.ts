@@ -291,17 +291,13 @@ export class S2sDiscoveryService extends Service {
   private async collectFromQuery(query: SessionQueryLike): Promise<S2sSessionInfo[]> {
     const records = await query.listSessions()
     const titles = new Map<string, string | undefined>()
-    const misses: SessionRecordLike[] = []
 
+    // One zero-I/O pass over the host's rows; whatever it cannot answer is left
+    // to the per-session read below.
     for (const record of records) {
-      const sessionId = String(record.header.id)
       const fromL1 = this.readTitleFromL1(record.header)
-      if (fromL1 !== undefined) {
-        // A title-less row is a real answer, not a miss.
-        titles.set(sessionId, fromL1.title)
-        continue
-      }
-      misses.push(record)
+      // A title-less row is a real answer, not a miss.
+      if (fromL1 !== undefined) titles.set(String(record.header.id), fromL1.title)
     }
 
     return mapLimit(records, READ_CONCURRENCY, async (record): Promise<S2sSessionInfo> => {
